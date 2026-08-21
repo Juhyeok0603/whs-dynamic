@@ -30,6 +30,12 @@ python3 dast analyze requests==2.31.0 --network disabled
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
+컨테이너는 현재 사용자의 UID/GID로 실행되어 호스트 임시 디렉터리를 root 소유로 만들지 않습니다. 이전 실패 실행에서 남은 임시 파일이 있다면 한 번만 정리하세요.
+
+```bash
+sudo rm -rf /tmp/pypi-dast-*
+```
+
 API: `POST /api/analysis`, `GET /api/analysis`, `GET /api/analysis/{id}`, `/events`, `/findings`.
 
 ## 구조

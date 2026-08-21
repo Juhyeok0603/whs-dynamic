@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,4 +24,5 @@ def check_runtime() -> tuple[bool, str]:
 def docker_command(workspace: Path, command: list[str], network: str) -> list[str]:
     # Restricted remains offline until an explicit allowlist proxy is configured.
     network_arg = "none" if network in {"disabled", "restricted"} else "bridge"
-    return ["docker", "run", "--rm", "--runtime", settings.sandbox_runtime, "--network", network_arg, "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m", "--cpus", "1", "--memory", "512m", "--pids-limit", "128", "-v", f"{workspace}:/workspace:rw", "python:3.12-slim", *command]
+    user_args = ["--user", f"{os.getuid()}:{os.getgid()}"] if hasattr(os, "getuid") else []
+    return ["docker", "run", "--rm", "--runtime", settings.sandbox_runtime, "--network", network_arg, *user_args, "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m", "--cpus", "1", "--memory", "512m", "--pids-limit", "128", "-v", f"{workspace}:/workspace:rw", "python:3.12-slim", *command]
