@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fixture-process"
+version = "0.1.0"
+
+[project.scripts]
+fixture-process = "fixture_process:main"
