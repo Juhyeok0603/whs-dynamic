@@ -15,6 +15,10 @@ def analyze(events: list[NormalizedEvent]) -> tuple[list[Finding], int, list[dic
             findings.append(Finding(rule_id="network.metadata_or_blocked", title="Cloud metadata or restricted network access attempted", severity="HIGH", confidence=.92, stage=event.stage, evidence=[event]))
         elif event.type == "process.exec" and any(x in text for x in ("pip", "python -m pip")):
             findings.append(Finding(rule_id="python.runtime_install", title="Runtime package installation attempted", severity="HIGH", confidence=.84, stage=event.stage, evidence=[event]))
+        elif event.type == "privilege.change":
+            findings.append(Finding(rule_id="privilege.change_attempt", title="Privilege change syscall attempted", severity="MEDIUM", confidence=.8, stage=event.stage, evidence=[event]))
+        elif event.type == "sandbox.escape_syscall":
+            findings.append(Finding(rule_id="sandbox.escape_syscall", title="Sandbox escape-related syscall attempted", severity="CRITICAL", confidence=.85, stage=event.stage, evidence=[event]))
     score = min(100, sum(_SCORES[f.severity] for f in findings))
     severity = "CRITICAL" if score >= 80 else "HIGH" if score >= 60 else "MEDIUM" if score >= 40 else "LOW" if score >= 20 else "INFO"
     chains = []

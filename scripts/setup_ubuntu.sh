@@ -10,7 +10,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates curl gnupg lsb-release docker.io \
   python3 python3.12-venv python3-pip python3-dev \
-  tcpdump libpcap-dev iproute2 nftables clang llvm \
+  tcpdump libpcap-dev iproute2 nftables clang llvm bpftrace \
   linux-headers-$(uname -r) jq git
 
 tool_packages=(linux-tools-common)
@@ -34,16 +34,29 @@ install -d -m 0755 /etc/docker
 if [[ -f /etc/docker/daemon.json ]]; then
   cp /etc/docker/daemon.json "/etc/docker/daemon.json.backup.$(date +%s)"
 fi
+install -d -m 0755 /var/log/runsc
 cat > /etc/docker/daemon.json <<'JSON'
 {
   "runtimes": {
     "runsc": {
       "path": "/usr/bin/runsc"
+    },
+    "runsc-trace": {
+      "path": "/usr/bin/runsc",
+      "runtimeArgs": ["--debug", "--strace", "--debug-log=/var/log/runsc/"]
     }
   }
 }
 JSON
 systemctl restart docker
+
+# pcap: let the non-root pipeline start tcpdump
+setcap cap_net_raw,cap_net_admin+ep "$(command -v tcpdump)"
+
+# eBPF: let the non-root pipeline start/stop bpftrace without a password prompt
+analysis_user="${SUDO_USER:-$USER}"
+printf '%s\n' "${analysis_user} ALL=(root) NOPASSWD: $(command -v bpftrace), /usr/bin/pkill -x bpftrace" > /etc/sudoers.d/pypi-dast
+chmod 0440 /etc/sudoers.d/pypi-dast
 
 chmod +x dast scripts/*.sh
 
