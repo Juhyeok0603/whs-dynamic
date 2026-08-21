@@ -1,7 +1,9 @@
 import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from .config import settings
 from .package import analyze_package
 from .schemas import AnalysisRequest
@@ -61,3 +63,7 @@ def delete_analysis(analysis_id: str):
         raise HTTPException(404, "analysis not found")
     jobs.pop(analysis_id, None)
     shutil.rmtree(settings.data_dir / analysis_id, ignore_errors=True)
+
+
+# Mounted last so it never shadows the /api/* routes above; serves frontend/index.html at "/".
+app.mount("/", StaticFiles(directory=Path(__file__).resolve().parents[2] / "frontend", html=True), name="frontend")

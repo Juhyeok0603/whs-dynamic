@@ -36,7 +36,7 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 sudo rm -rf /tmp/pypi-dast-*
 ```
 
-API: `POST /api/analysis`, `GET /api/analysis`, `GET /api/analysis/{id}`, `/events`, `/findings`.
+API: `POST /api/analysis`, `GET /api/analysis`, `GET /api/analysis/{id}`, `/events`, `/findings`. 대시보드는 서버가 `frontend/index.html`을 `/`에서 직접 서빙하므로 `uvicorn` 실행 후 `http://localhost:8000`을 그대로 열면 됩니다.
 
 ## 구조
 
