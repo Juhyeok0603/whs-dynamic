@@ -21,5 +21,6 @@ def check_runtime() -> tuple[bool, str]:
 
 
 def docker_command(workspace: Path, command: list[str], network: str) -> list[str]:
-    network_arg = "none" if network == "disabled" else "bridge"
+    # Restricted remains offline until an explicit allowlist proxy is configured.
+    network_arg = "none" if network in {"disabled", "restricted"} else "bridge"
     return ["docker", "run", "--rm", "--runtime", settings.sandbox_runtime, "--network", network_arg, "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m", "--cpus", "1", "--memory", "512m", "--pids-limit", "128", "-v", f"{workspace}:/workspace:rw", "python:3.12-slim", *command]
