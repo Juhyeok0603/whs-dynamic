@@ -9,9 +9,19 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates curl gnupg lsb-release docker.io \
-  python3 python3-venv python3-pip python3-dev \
-  tcpdump libpcap-dev iproute2 nftables bpftool clang llvm \
+  python3 python3.12-venv python3-pip python3-dev \
+  tcpdump libpcap-dev iproute2 nftables clang llvm \
   linux-headers-$(uname -r) jq git
+
+tool_packages=(linux-tools-common)
+if apt-cache show "linux-tools-$(uname -r)" >/dev/null 2>&1; then
+  tool_packages+=("linux-tools-$(uname -r)")
+elif apt-cache show linux-tools-generic >/dev/null 2>&1; then
+  tool_packages+=(linux-tools-generic)
+fi
+if ! apt-get install -y "${tool_packages[@]}"; then
+  echo "WARN: kernel eBPF tools could not be installed; collector will be unavailable"
+fi
 systemctl enable --now docker
 
 install -d -m 0755 /etc/apt/keyrings
@@ -35,8 +45,10 @@ cat > /etc/docker/daemon.json <<'JSON'
 JSON
 systemctl restart docker
 
+chmod +x dast scripts/*.sh
+
 runsc --version
 docker info --format 'Docker {{.ServerVersion}}; runtimes={{json .Runtimes}}'
 python3 --version
-pip3 --version
+python3 -m pip --version
 echo "Ubuntu environment setup complete. Run ./scripts/check_environment.sh"

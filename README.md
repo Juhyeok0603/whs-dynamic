@@ -25,8 +25,8 @@ bash scripts/create_fake_credentials.sh
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-./dast doctor
-./dast analyze requests==2.31.0 --network disabled
+python3 dast doctor
+python3 dast analyze requests==2.31.0 --network disabled
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
