@@ -272,6 +272,8 @@ async function openDetail(id){
 
     <div class="sec"><h3>DNS 조회 <span class="n">(${(bh.dns||[]).length})</span></h3>${eventRows(bh.dns,'DNS 조회가 없습니다.')}</div>
 
+    <div class="sec"><h3>조회된 도메인 <span class="n">(${(bh.dns_domains||[]).length})</span></h3>${(bh.dns_domains||[]).length?(bh.dns_domains||[]).map(d=>`<span class="chip neutral">${esc(d)}</span>`).join(''):'<div class="empty small">캡처된 도메인 이름이 없습니다 (network=full에서 실제 패킷을 디코딩해야 나옴 — connect 시도만으로는 도메인명을 알 수 없음).</div>'}</div>
+
     <div class="sec"><h3>권한/샌드박스 탈출 시도 <span class="n">(${(bh.privilege||[]).length})</span></h3>${eventRows(bh.privilege,'권한 변경이나 탈출 관련 syscall이 없습니다.')}</div>
 
     <div class="sec"><h3>패킷 캡처 flow <span class="n">(${(bh.flows||[]).length})</span></h3>${flowRows(bh.flows)}</div>
@@ -281,16 +283,41 @@ async function openDetail(id){
     <div class="sec"><h3>수집기 상태</h3>${Object.entries(cs).map(([k,v])=>collectorChip(k,v)).join('')}</div>
 
     <div class="sec"><h3>리소스 사용량</h3><div class="kv">
-      <div>proc</div><div>${ru.proc?`${ru.proc.samples}회 샘플링, 최대 ${ru.proc.processes}개 프로세스, ${ru.proc.rss_kb} KB RSS`:'—'}</div>
-      <div>cgroup</div><div>${ru.cgroup?`${ru.cgroup.samples}회 샘플링, ${(ru.cgroup.memory_bytes/1048576).toFixed(1)} MB, ${ru.cgroup.pids}개 PID, CPU ${(ru.cgroup.cpu_usec/1e6).toFixed(2)}초`:'—'}</div>
+      <div>proc</div><div>${ru.proc?`${ru.proc.samples}회 샘플링, 최대 ${ru.proc.processes}개 프로세스, ${ru.proc.rss_kb} KB RSS (시계열 ${ru.proc.series?.length||0}개 포인트 보관)`:'—'}</div>
+      <div>cgroup</div><div>${ru.cgroup?`${ru.cgroup.samples}회 샘플링, ${(ru.cgroup.memory_bytes/1048576).toFixed(1)} MB, ${ru.cgroup.pids}개 PID, CPU ${(ru.cgroup.cpu_usec/1e6).toFixed(2)}초 (시계열 ${ru.cgroup.series?.length||0}개 포인트 보관)`:'—'}</div>
     </div></div>
 
     <div class="sec"><h3>파일시스템 변경 — 생성 <span class="n">(${rep.filesystem_diff?.created?.length||0})</span></h3>${fsPathList(rep.filesystem_diff?.created)}</div>
     <div class="sec"><h3>파일시스템 변경 — 수정 <span class="n">(${rep.filesystem_diff?.modified?.length||0})</span></h3>${fsPathList(rep.filesystem_diff?.modified)}</div>
     <div class="sec"><h3>파일시스템 변경 — 삭제 <span class="n">(${rep.filesystem_diff?.deleted?.length||0})</span></h3>${fsPathList(rep.filesystem_diff?.deleted)}</div>
 
+    <div class="sec"><h3>산출물 파일 <span class="n">logs/${esc(id)}/</span></h3><div id="logbundle"><div class="empty small">불러오는 중...</div></div></div>
+
     ${rep.errors?.length?`<div class="sec"><h3>오류</h3><pre>${esc(rep.errors.join('\n'))}</pre></div>`:''}
   </div></div>`;
+  loadLogBundle(id);
+}
+
+async function loadLogBundle(id){
+  const box=document.querySelector('#logbundle');
+  if(!box) return;
+  try{
+    const lr=await fetch(api+'/api/analysis/'+id+'/logs');
+    if(!lr.ok){box.innerHTML='<div class="empty small">이 분석에는 로그 산출물이 없습니다.</div>';return;}
+    const files=await lr.json();
+    if(!files.length){box.innerHTML='<div class="empty small">저장된 로그 파일이 없습니다.</div>';return;}
+    const cards=await Promise.all(files.map(async f=>{
+      if(f==='network.pcap'){
+        return `<details class="stagecard"><summary><span>${esc(f)}</span><span class="badge2">바이너리</span></summary><div class="empty small">텍스트로 표시할 수 없습니다 — <a href="${api}/api/analysis/${id}/logs/${f}" target="_blank" rel="noopener">다운로드</a></div></details>`;
+      }
+      const cr=await fetch(api+'/api/analysis/'+id+'/logs/'+f);
+      const text=cr.ok?await cr.text():'(불러오기 실패)';
+      return `<details class="stagecard"><summary><span>${esc(f)}</span><span class="badge2">${text.length}자</span></summary><pre>${esc(text||'(내용 없음)')}</pre></details>`;
+    }));
+    box.innerHTML=cards.join('');
+  }catch(e){
+    box.innerHTML='<div class="empty small">로그를 불러오지 못했습니다.</div>';
+  }
 }
 
 function closeDetail(e){if(e.target===e.currentTarget||e.target.classList.contains('close'))document.querySelector('#overlay').innerHTML='';}

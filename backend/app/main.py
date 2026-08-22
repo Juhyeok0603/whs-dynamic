@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from packaging.version import InvalidVersion, Version
 from .config import settings
@@ -14,6 +15,7 @@ from .storage import load_report
 app = FastAPI(title="PyPI DAST MVP", version="0.1.0")
 executor = ThreadPoolExecutor(max_workers=2)
 jobs: dict[str, dict] = {}  # analysis_id -> in-flight job state, until report.json exists on disk
+LOG_FILES = ("package.log", "fs-diff.log", "exit-code.txt", "dns.log", "netsim.json", "network.pcap", "gvisor-trace.json", "resource.json")
 
 
 @app.get("/health")
@@ -85,6 +87,27 @@ def get_events(analysis_id: str):
 
 @app.get("/api/analysis/{analysis_id}/findings")
 def get_findings(analysis_id: str): return get_analysis(analysis_id)["findings"]
+
+
+@app.get("/api/analysis/{analysis_id}/logs")
+def list_logs(analysis_id: str):
+    """Lists the logs/<run-id>/ file bundle written by write_log_bundle (package.log, fs-diff.log, etc)."""
+    logs_dir = settings.data_dir / analysis_id / "logs"
+    if not logs_dir.is_dir():
+        raise HTTPException(404, "no log bundle for this analysis")
+    return [name for name in LOG_FILES if (logs_dir / name).is_file()]
+
+
+@app.get("/api/analysis/{analysis_id}/logs/{filename}")
+def get_log(analysis_id: str, filename: str):
+    if filename not in LOG_FILES:
+        raise HTTPException(404, "unknown log file")
+    path = settings.data_dir / analysis_id / "logs" / filename
+    if not path.is_file():
+        raise HTTPException(404, "log file not found")
+    if filename == "network.pcap":
+        return FileResponse(path, media_type="application/vnd.tcpdump.pcap", filename=filename)
+    return PlainTextResponse(path.read_text(encoding="utf-8", errors="replace"))
 
 
 @app.delete("/api/analysis/{analysis_id}", status_code=204)

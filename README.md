@@ -44,7 +44,8 @@ API: `POST /api/analysis`, `GET /api/analysis`, `GET /api/analysis/{id}`, `/even
 - `backend/app/sandbox.py`: Docker `--runtime runsc`, network, resource limit command builder
 - `backend/app/collectors.py`: filesystem diff와 normalized runtime event 기반
 - `backend/app/analyzer.py`: rule-based finding, scoring, basic correlation
-- `data/analyses/<UUID>/report.json`: 결과 저장 위치
+- `data/analyses/<UUID>/report.json`: 통합 JSON 결과 저장 위치
+- `data/analyses/<UUID>/logs/`: 같은 분석의 npm 쪽 모듈과 동일한 파일 단위 산출물 — `package.log`(stage별 stdout/stderr), `fs-diff.log`, `exit-code.txt`(install stage), `dns.log`(pcap에서 디코딩한 조회 도메인), `netsim.json`(싱크홀 미구현 — 상태만 명시), `network.pcap`(원본 캡처, network=full일 때만), `gvisor-trace.json`(behavior 전체), `resource.json`(리소스 시계열). `GET /api/analysis/{id}/logs`로 목록, `GET /api/analysis/{id}/logs/{filename}`로 개별 조회/다운로드 — 대시보드 상세 패널의 "산출물 파일" 섹션이 이걸 그대로 씀
 
 `disabled`와 `restricted`는 현재 모두 `--network none`으로 fail-closed 동작합니다. `full`만 Docker bridge 네트워크를 사용합니다. allowlist proxy와 `169.254.169.254` 차단 정책을 별도로 구성하기 전에는 외부 네트워크를 활성화하지 마세요.
 
@@ -52,4 +53,4 @@ API: `POST /api/analysis`, `GET /api/analysis`, `GET /api/analysis/{id}`, `/even
 
 gVisor strace collector는 `runsc-trace` Docker runtime(`--debug --strace --debug-log=/var/log/runsc/`)이 등록된 경우 sandboxed stage(sdist면 build, install, import, probe:*, execute)의 exec/connect/privilege/escape/DNS(port 53)/sensitive-open syscall을 report event로 수집합니다. build/install 단계도 관찰 대상이라 `setup.py`/PEP517 빌드 훅에서 터지는 코드까지 잡히며, analyzer는 그 단계에서 항상 나오는 우리 자신의 `pip install` 호출만 `python.runtime_install` 룰에서 예외 처리합니다(다른 룰은 그대로 적용). import 이후에는 패키지 자신의 `entry_points.txt`에 등록된 콘솔 스크립트를 최대 3개까지 `--help`로 실행해(`probe:<script>` stage) bare import보다 한 단계 더 실행 경로를 관찰합니다 — 임의 내부 함수 호출까지는 하지 않는 선에서 최소한의 post-import 체크입니다. `scripts/setup_ubuntu.sh`가 runtime과 `/var/log/runsc`를 함께 등록하며, 로그 파일은 누적되므로 주기적으로 `sudo rm -f /var/log/runsc/*` 정리가 필요합니다.
 
-추가 collector: `/proc`(runsc 프로세스 RSS)과 docker cgroup(memory/pids/cpu)은 sandboxed stage 동안 background thread로 샘플링되어 `resource_usage`에 기록됩니다. pcap은 tcpdump로 docker0을 캡처하며(`--network full`일 때만 의미 있음, tcpdump에 `cap_net_raw` 필요), eBPF는 bpftrace 기반 host-boundary 관찰자로 `sudo NOPASSWD` 등록이 필요합니다 — 둘 다 setup 스크립트가 설정합니다. eBPF 관찰은 host 전체가 대상이라 analyzer 채점에는 넣지 않고 `behavior.host_boundary`에 교차검증용으로만 기록합니다. 각 collector는 전제조건이 빠지면 report에 사유를 명시하고 가짜 telemetry를 만들지 않습니다. 다음 단계는 fixture package와 API worker 추가입니다.
+추가 collector: `/proc`(runsc 프로세스 RSS)과 docker cgroup(memory/pids/cpu)은 sandboxed stage 동안 background thread로 0.5초 간격 샘플링되어 `resource_usage`에 최댓값과 함께 전체 시계열(`series`)로 기록됩니다. pcap은 tcpdump로 docker0을 캡처하며(`--network full`일 때만 의미 있음, tcpdump에 `cap_net_raw` 필요), 원본 캡처 파일은 `data/analyses/<UUID>/logs/network.pcap`에 영구 저장되고 DNS 질의 도메인명은 캡처된 패킷을 디코딩해 `behavior.dns_domains`로 별도 추출합니다(strace 기반 `behavior.dns`는 IP:port 수준의 연결 시도만 표시 — 네트워크가 막혀 있어도 잡히지만 도메인명은 모름). eBPF는 bpftrace 기반 host-boundary 관찰자로 `sudo NOPASSWD` 등록이 필요합니다 — 이 셋 다 setup 스크립트가 설정합니다. eBPF 관찰은 host 전체가 대상이라 analyzer 채점에는 넣지 않고 `behavior.host_boundary`에 교차검증용으로만 기록합니다. 각 collector는 전제조건이 빠지면 report에 사유를 명시하고 가짜 telemetry를 만들지 않습니다. 다음 단계는 fixture package와 API worker 추가입니다.

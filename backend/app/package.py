@@ -10,7 +10,7 @@ from .config import settings
 from .schemas import AnalysisReport, NormalizedEvent, StageResult, now
 from .collectors import EbpfCollector, FilesystemCollector, GvisorStraceCollector, HostSamplerCollector, PcapCollector, RuntimeCollector
 from .analyzer import analyze
-from .storage import save_report
+from .storage import save_report, write_log_bundle
 from .sandbox import check_runtime, docker_command
 
 
@@ -64,6 +64,7 @@ def analyze_package(package: str, version: str | None = None, artifact="auto", n
         sandbox_ready, sandbox_reason, sandbox_runtime = check_runtime()
         gvisor = GvisorStraceCollector(settings.gvisor_log_dir)
         strace_active = sandbox_ready and sandbox_runtime.endswith("-trace") and gvisor.available()
+        pcap = None  # may never be constructed if failure happens before the install stage
         try:
             track(run_stage("resolve", [sys.executable, "-c", f"print('resolved by pip download: {requested}')"], workspace, 5))
             # Dependencies are downloaded on the host so the sandbox can install offline with --network none.
@@ -73,7 +74,7 @@ def analyze_package(package: str, version: str | None = None, artifact="auto", n
             distribution_type = "wheel" if selected.suffix == ".whl" else "sdist"
             lister = "zipfile" if selected.suffix in (".whl", ".zip") else "tarfile"
             track(run_stage("inspect", [sys.executable, "-m", lister, "-l", str(selected)], workspace, 20))
-            host_sampler = HostSamplerCollector(); pcap = PcapCollector(network); ebpf = EbpfCollector()
+            host_sampler = HostSamplerCollector(); pcap = PcapCollector(network, workspace / "network.pcap"); ebpf = EbpfCollector()
             for collector in (host_sampler, pcap, ebpf): collector.start()
             try:
                 # build/install run untrusted setup.py / PEP517 build-backend code, so they're strace-observed too;
@@ -109,7 +110,7 @@ def analyze_package(package: str, version: str | None = None, artifact="auto", n
                 for collector in (host_sampler, pcap, ebpf): collector.stop()
             after = fs.snapshot([workspace]); diff = fs.diff(before, after)
             dns_events = [e.model_dump() for e in events if e.category == "dns"] + [dict(source="pcap", **f) for f in pcap.summary() if f["dst_port"] == 53]
-            behavior = {"processes": [e.model_dump() for e in events if e.category == "process"], "files": [e.model_dump() for e in events if e.category == "file"], "dns": dns_events, "connections": [e.model_dump() for e in events if e.category == "network"], "privilege": [e.model_dump() for e in events if e.category == "privilege"], "flows": pcap.summary(), "host_boundary": ebpf.observations, "syscall_totals": gvisor.totals()}
+            behavior = {"processes": [e.model_dump() for e in events if e.category == "process"], "files": [e.model_dump() for e in events if e.category == "file"], "dns": dns_events, "dns_domains": pcap.domains(), "connections": [e.model_dump() for e in events if e.category == "network"], "privilege": [e.model_dump() for e in events if e.category == "privilege"], "flows": pcap.summary(), "host_boundary": ebpf.observations, "syscall_totals": gvisor.totals()}
             findings, score, chains = analyze(events)
             finished = now()
             gvisor_status = "strace collector active" if strace_active else (sandbox_reason if not sandbox_ready else f"isolation only: {settings.sandbox_runtime}-trace runtime or {settings.gvisor_log_dir} missing (run scripts/setup_ubuntu.sh)")
@@ -126,6 +127,8 @@ def analyze_package(package: str, version: str | None = None, artifact="auto", n
             report = AnalysisReport(analysis_id=analysis_id, package={"ecosystem":"pypi", "name":package, "version":version, "distribution":{"type":distribution_type,"filename":selected.name}}, analysis={"started_at":started,"finished_at":finished,"duration_seconds":0,"status":"completed"}, sandbox={"runtime":sandbox_runtime,"network_mode":network}, summary={"risk_score":score,"severity":("CRITICAL" if score>=80 else "HIGH" if score>=60 else "MEDIUM" if score>=40 else "LOW" if score>=20 else "INFO"),"process_events":len(behavior["processes"]),"file_events":len(behavior["files"]),"network_events":len(behavior["connections"]),"dns_queries":len(dns_events),"findings":len(findings)}, stages=stages, findings=findings, behavior=behavior, filesystem_diff=diff, resource_usage=host_sampler.usage(), behavior_chains=chains, collector_status=collector_status, errors=errors)
         except Exception as exc:
             errors.append(str(exc)); report = AnalysisReport(analysis_id=analysis_id, package={"ecosystem":"pypi","name":package,"version":version}, analysis={"started_at":started,"finished_at":now(),"duration_seconds":0,"status":"failed"}, sandbox={"runtime":settings.sandbox_runtime,"network_mode":network}, summary={"risk_score":0,"severity":"INFO","findings":0}, stages=stages, findings=[], behavior={}, filesystem_diff={"created":[],"modified":[],"deleted":[]}, resource_usage={}, behavior_chains=[], collector_status={"filesystem":"success"}, errors=errors)
+        # Written while the workspace (and its raw network.pcap) still exist, in both the success and failure case.
+        write_log_bundle(settings.data_dir, report, pcap.pcap_path if pcap else None)
     report.analysis["duration_seconds"] = round(time.time() - __import__("datetime").datetime.fromisoformat(started).timestamp(), 3)
     save_report(settings.data_dir, report)
     return report

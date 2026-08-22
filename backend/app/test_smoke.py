@@ -37,6 +37,8 @@ def test_pip_platform_probe_not_flagged_as_shell(tmp_path: Path):
 def test_pcap_and_ebpf_line_parsers():
     assert PcapCollector.parse_line("12:00:00.000001 IP 172.17.0.2.44444 > 8.8.8.8.53: UDP, length 32") == ("172.17.0.2", "8.8.8.8", 53)
     assert PcapCollector.parse_line("garbage") is None
+    assert PcapCollector.parse_dns_name("11:22:33.000001 IP 172.17.0.2.53912 > 8.8.8.8.53: 12345+ A? example.com. (29)") == "example.com"
+    assert PcapCollector.parse_dns_name("11:22:33.000002 IP 8.8.8.8.53 > 172.17.0.2.53912: 12345 1/0/0 A 93.184.216.34 (45)") is None
     assert EbpfCollector.parse_line("EXEC pid=123 comm=curl file=/usr/bin/curl") == {"type": "process.exec", "pid": 123, "comm": "curl", "file": "/usr/bin/curl"}
     assert EbpfCollector.parse_line("CONN pid=9 comm=python3") == {"type": "network.connect", "pid": 9, "comm": "python3"}
     assert EbpfCollector.parse_line("EXEC pid=1 comm=dockerd file=/usr/bin/dockerd") is None  # infra noise filtered

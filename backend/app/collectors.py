@@ -1,5 +1,6 @@
 from pathlib import Path
 from collections import Counter
+from datetime import datetime, timezone
 import hashlib
 import os
 import re
@@ -129,8 +130,10 @@ class HostSamplerCollector(Collector):
         self._thread: threading.Thread | None = None
         self.proc_samples = 0
         self.proc_max = {"processes": 0, "rss_kb": 0}
+        self.proc_series: list[dict[str, Any]] = []
         self.cgroup_samples = 0
         self.cgroup_max = {"memory_bytes": 0, "pids": 0, "cpu_usec": 0}
+        self.cgroup_series: list[dict[str, Any]] = []
 
     def proc_available(self) -> bool: return Path("/proc").is_dir()
     def cgroup_available(self) -> bool: return Path("/sys/fs/cgroup").is_dir()
@@ -165,6 +168,7 @@ class HostSamplerCollector(Collector):
         if count:
             self.proc_samples += 1
             self.proc_max = {"processes": max(self.proc_max["processes"], count), "rss_kb": max(self.proc_max["rss_kb"], rss)}
+            self.proc_series.append({"t": datetime.now(timezone.utc).isoformat(), "processes": count, "rss_kb": rss})
 
     def _sample_cgroup(self) -> None:
         # ponytail: reads every docker container cgroup — assumes the analysis VM only runs our sandbox; use --cidfile for exact matching
@@ -182,6 +186,7 @@ class HostSamplerCollector(Collector):
         if scopes:
             self.cgroup_samples += 1
             self.cgroup_max = {"memory_bytes": max(self.cgroup_max["memory_bytes"], mem), "pids": max(self.cgroup_max["pids"], pids), "cpu_usec": max(self.cgroup_max["cpu_usec"], cpu)}
+            self.cgroup_series.append({"t": datetime.now(timezone.utc).isoformat(), "memory_bytes": mem, "pids": pids, "cpu_usec": cpu})
 
     def stop(self) -> None:
         self._stop.set()
@@ -191,9 +196,9 @@ class HostSamplerCollector(Collector):
     def usage(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
         if self.proc_samples:
-            result["proc"] = {"samples": self.proc_samples, **self.proc_max}
+            result["proc"] = {"samples": self.proc_samples, **self.proc_max, "series": self.proc_series}
         if self.cgroup_samples:
-            result["cgroup"] = {"samples": self.cgroup_samples, **self.cgroup_max}
+            result["cgroup"] = {"samples": self.cgroup_samples, **self.cgroup_max, "series": self.cgroup_series}
         return result
 
 
@@ -201,18 +206,28 @@ class PcapCollector(Collector):
     """Captures bridge traffic with tcpdump during sandboxed stages. Only meaningful with --network full."""
     name = "pcap"
     _LINE = re.compile(r"IP6?\s+(\S+?)\.(\d+)\s+>\s+(\S+?)\.(\d+):")
+    # tcpdump's default (non -q) decoder prints DNS queries like "... : 1234+ A? example.com. (33)".
+    # ponytail: best-effort text-format parsing against tcpdump's default decoder; may need adjustment across tcpdump versions.
+    _DNS_QUERY = re.compile(r"\s\d+\+?\s+\w+\?\s+(\S+?)\.\s")
 
-    def __init__(self, network: str, interface: str = "docker0"):
+    def __init__(self, network: str, pcap_path: Path, interface: str = "docker0"):
         self.network = network
         self.interface = interface
+        self.pcap_path = pcap_path
         self.proc: subprocess.Popen | None = None
         self.flows: dict[tuple[str, str, int], int] = {}
+        self.dns_names: set[str] = set()
         self.status = "disabled (network none)" if network in ("disabled", "restricted") else "not started"
 
     @classmethod
     def parse_line(cls, line: str) -> tuple[str, str, int] | None:
         match = cls._LINE.search(line)
         return (match.group(1), match.group(3), int(match.group(4))) if match else None
+
+    @classmethod
+    def parse_dns_name(cls, line: str) -> str | None:
+        match = cls._DNS_QUERY.search(line)
+        return match.group(1) if match else None
 
     def start(self) -> None:
         if self.network in ("disabled", "restricted"):
@@ -221,7 +236,9 @@ class PcapCollector(Collector):
             self.status = "tcpdump not installed"
             return
         try:
-            self.proc = subprocess.Popen(["tcpdump", "-i", self.interface, "-n", "-l", "-q"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # Written to a file (not piped live) so the raw capture survives as an artifact; decoded for
+            # flow/DNS parsing afterward via a second "tcpdump -r" read pass in stop().
+            self.proc = subprocess.Popen(["tcpdump", "-i", self.interface, "-n", "-w", str(self.pcap_path)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             self.status = "capturing"
         except OSError as exc:
             self.status = f"failed to start: {exc}"
@@ -231,22 +248,32 @@ class PcapCollector(Collector):
             return
         self.proc.terminate()
         try:
-            out, err = self.proc.communicate(timeout=5)
+            _, err = self.proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             self.proc.kill()
-            out, err = self.proc.communicate()
-        for line in out.splitlines():
+            _, err = self.proc.communicate()
+        if "not permitted" in err.lower() or "permission" in err.lower():
+            self.status = "permission denied: setcap cap_net_raw,cap_net_admin+ep $(which tcpdump)"
+            return
+        if not self.pcap_path.exists() or self.pcap_path.stat().st_size == 0:
+            self.status = "success (0 packets)"
+            return
+        decode = subprocess.run(["tcpdump", "-r", str(self.pcap_path), "-n"], capture_output=True, text=True)
+        for line in decode.stdout.splitlines():
             parsed = self.parse_line(line)
             if parsed:
                 self.flows[parsed] = self.flows.get(parsed, 0) + 1
-        if "not permitted" in err.lower() or "permission" in err.lower():
-            self.status = "permission denied: setcap cap_net_raw,cap_net_admin+ep $(which tcpdump)"
-        else:
-            self.status = f"success ({sum(self.flows.values())} packets, {len(self.flows)} flows)"
+            name = self.parse_dns_name(line)
+            if name:
+                self.dns_names.add(name.rstrip("."))
+        self.status = f"success ({sum(self.flows.values())} packets, {len(self.flows)} flows, saved to {self.pcap_path.name})"
 
     def summary(self, limit: int = 100) -> list[dict[str, Any]]:
         ranked = sorted(self.flows.items(), key=lambda kv: -kv[1])[:limit]
         return [{"src": src, "dst": dst, "dst_port": port, "packets": count} for (src, dst, port), count in ranked]
+
+    def domains(self) -> list[str]:
+        return sorted(self.dns_names)
 
 
 class EbpfCollector(Collector):
