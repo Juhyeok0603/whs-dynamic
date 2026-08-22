@@ -37,39 +37,42 @@ def run_stage(name, command, cwd, timeout, sandboxed=False, network="restricted"
     return StageResult(name=name, status=status, started_at=started_at, finished_at=now(), duration_seconds=round(time.monotonic() - started, 3), exit_code=code, stdout=stdout, stderr=stderr, timeout=timed_out)
 
 
-def analyze_package(package: str, version: str | None = None, artifact="auto", network="restricted", timeout=240, custom_command=None, analysis_id: str | None = None) -> AnalysisReport:
+def analyze_package(package: str, version: str | None = None, artifact="auto", network="restricted", timeout=240, custom_command=None, analysis_id: str | None = None, on_stage=None) -> AnalysisReport:
     analysis_id = analysis_id or str(uuid.uuid4()); started = now(); events = []; stages = []; errors = []
     requested = package if version is None else f"{package}=={version}"
+    def track(stage_result):
+        stages.append(stage_result)
+        if on_stage: on_stage(stage_result.name, stage_result.status)
     with tempfile.TemporaryDirectory(prefix="pypi-dast-") as temp:
         workspace = Path(temp); fs = FilesystemCollector(); runtime = RuntimeCollector(); before = fs.snapshot([workspace])
         sandbox_ready, sandbox_reason, sandbox_runtime = check_runtime()
         gvisor = GvisorStraceCollector(settings.gvisor_log_dir)
         strace_active = sandbox_ready and sandbox_runtime.endswith("-trace") and gvisor.available()
         try:
-            resolve = run_stage("resolve", [sys.executable, "-c", f"print('resolved by pip download: {requested}')"], workspace, 5); stages.append(resolve)
+            track(run_stage("resolve", [sys.executable, "-c", f"print('resolved by pip download: {requested}')"], workspace, 5))
             # Dependencies are downloaded on the host so the sandbox can install offline with --network none.
-            download = run_stage("download", [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", "--retries", "1", "--timeout", "15", "--dest", str(workspace), requested], workspace, 120); stages.append(download)
+            download = run_stage("download", [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", "--retries", "1", "--timeout", "15", "--dest", str(workspace), requested], workspace, 120); track(download)
             selected = select_artifact(list(workspace.iterdir()), package, artifact)
             if selected is None: raise RuntimeError(download.stderr or "No artifact downloaded")
             distribution_type = "wheel" if selected.suffix == ".whl" else "sdist"
             lister = "zipfile" if selected.suffix in (".whl", ".zip") else "tarfile"
-            inspect = run_stage("inspect", [sys.executable, "-m", lister, "-l", str(selected)], workspace, 20); stages.append(inspect)
+            track(run_stage("inspect", [sys.executable, "-m", lister, "-l", str(selected)], workspace, 20))
             host_sampler = HostSamplerCollector(); pcap = PcapCollector(network); ebpf = EbpfCollector()
             for collector in (host_sampler, pcap, ebpf): collector.start()
             try:
                 if distribution_type == "sdist":
-                    build = run_stage("build", ["python", "-m", "pip", "wheel", "--no-deps", "--no-cache-dir", f"/workspace/{selected.name}", "-w", "/workspace/built"], workspace, 90, True, network); stages.append(build)
-                install = run_stage("install", ["python", "-m", "pip", "install", "--no-index", "--find-links", "/workspace", "--target", "/workspace/site", f"/workspace/{selected.name}"], workspace, 60, True, network); stages.append(install)
+                    track(run_stage("build", ["python", "-m", "pip", "wheel", "--no-deps", "--no-cache-dir", f"/workspace/{selected.name}", "-w", "/workspace/built"], workspace, 90, True, network))
+                track(run_stage("install", ["python", "-m", "pip", "install", "--no-index", "--find-links", "/workspace", "--target", "/workspace/site", f"/workspace/{selected.name}"], workspace, 60, True, network))
                 top = package.lower().replace("-", "_")
                 # ponytail: strace is only harvested for import/execute — install/build legitimately run pip and would false-positive the analyzer
                 gvisor.mark()
-                import_stage = run_stage("import", ["python", "-c", f"import sys; sys.path.insert(0, '/workspace/site'); import {top}"], workspace, 30, True, network); stages.append(import_stage)
+                import_stage = run_stage("import", ["python", "-c", f"import sys; sys.path.insert(0, '/workspace/site'); import {top}"], workspace, 30, True, network); track(import_stage)
                 events.extend(gvisor.collect("import"))
                 if import_stage.status == "completed":
                     events.append(runtime.event("import", "process.exec", {"executable": "python", "args": ["-c", f"import {top}"], "parent": None}, "process"))
                 if custom_command:
                     gvisor.mark()
-                    execute = run_stage("execute", custom_command, workspace, 30, True, network); stages.append(execute)
+                    execute = run_stage("execute", custom_command, workspace, 30, True, network); track(execute)
                     events.extend(gvisor.collect("execute"))
             finally:
                 for collector in (host_sampler, pcap, ebpf): collector.stop()

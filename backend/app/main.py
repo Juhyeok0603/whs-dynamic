@@ -8,12 +8,12 @@ from fastapi.staticfiles import StaticFiles
 from packaging.version import InvalidVersion, Version
 from .config import settings
 from .package import analyze_package
-from .schemas import AnalysisRequest
+from .schemas import AnalysisRequest, now
 from .storage import load_report
 
 app = FastAPI(title="PyPI DAST MVP", version="0.1.0")
 executor = ThreadPoolExecutor(max_workers=2)
-jobs: dict[str, str] = {}
+jobs: dict[str, dict] = {}  # analysis_id -> in-flight job state, until report.json exists on disk
 
 
 @app.get("/health")
@@ -43,28 +43,36 @@ def search_pypi(package: str):
 @app.post("/api/analysis", status_code=202)
 def create_analysis(request: AnalysisRequest):
     analysis_id = str(uuid.uuid4())
-    jobs[analysis_id] = "queued"
+    total_stages = 5 + (1 if request.custom_command else 0)  # resolve, download, inspect, install, import (+execute)
+    jobs[analysis_id] = {"status": "queued", "package": request.package, "version": request.version, "stage": None, "completed_stages": 0, "total_stages": total_stages, "started_at": None, "finished_at": None}
     executor.submit(_run_analysis, analysis_id, request)
     return {"analysis_id": analysis_id, "status": "queued"}
 
 
 def _run_analysis(analysis_id: str, request: AnalysisRequest):
-    jobs[analysis_id] = "running"
-    report = analyze_package(request.package, request.version, request.artifact, request.network, request.timeout, request.custom_command, analysis_id)
-    jobs[analysis_id] = report.analysis["status"]
+    jobs[analysis_id].update(status="running", started_at=now())
+    def on_stage(name: str, status: str):
+        job = jobs[analysis_id]
+        job["stage"] = name
+        job["completed_stages"] = min(job["completed_stages"] + 1, job["total_stages"])
+    report = analyze_package(request.package, request.version, request.artifact, request.network, request.timeout, request.custom_command, analysis_id, on_stage)
+    jobs[analysis_id].update(status=report.analysis["status"], finished_at=now())
 
 
 @app.get("/api/analysis")
 def list_analysis():
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    return [load_report(settings.data_dir, p.name) for p in settings.data_dir.iterdir() if p.is_dir() and (p / "report.json").exists()]
+    saved = [load_report(settings.data_dir, p.name) for p in settings.data_dir.iterdir() if p.is_dir() and (p / "report.json").exists()]
+    saved_ids = {r["analysis_id"] for r in saved}
+    pending = [{"analysis_id": aid, **job} for aid, job in jobs.items() if aid not in saved_ids and job["status"] in ("queued", "running")]
+    return saved + pending
 
 
 @app.get("/api/analysis/{analysis_id}")
 def get_analysis(analysis_id: str):
     report = load_report(settings.data_dir, analysis_id)
     if report is None:
-        if analysis_id in jobs: return {"analysis_id": analysis_id, "status": jobs[analysis_id]}
+        if analysis_id in jobs: return {"analysis_id": analysis_id, **jobs[analysis_id]}
         raise HTTPException(404, "analysis not found")
     return report
 
