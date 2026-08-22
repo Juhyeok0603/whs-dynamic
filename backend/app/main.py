@@ -2,8 +2,10 @@ import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from packaging.version import InvalidVersion, Version
 from .config import settings
 from .package import analyze_package
 from .schemas import AnalysisRequest
@@ -16,6 +18,26 @@ jobs: dict[str, str] = {}
 
 @app.get("/health")
 def health(): return {"status": "ok"}
+
+
+@app.get("/api/pypi/{package}")
+def search_pypi(package: str):
+    """Looks up a package on PyPI so the dashboard can offer a version picker before analysis."""
+    try:
+        r = httpx.get(f"https://pypi.org/pypi/{package}/json", timeout=10)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"PyPI lookup failed: {exc}")
+    if r.status_code == 404:
+        raise HTTPException(404, "package not found on PyPI")
+    r.raise_for_status()
+    data = r.json()
+    def sort_key(v: str):
+        try:
+            return (0, Version(v))
+        except InvalidVersion:
+            return (1, v)
+    versions = sorted(data.get("releases", {}).keys(), key=sort_key, reverse=True)
+    return {"name": data["info"]["name"], "summary": data["info"].get("summary"), "latest_version": data["info"]["version"], "versions": versions}
 
 
 @app.post("/api/analysis", status_code=202)

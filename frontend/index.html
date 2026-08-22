@@ -4,15 +4,64 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PyPI DAST</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono&display=swap');
-    :root{--ink:#17211f;--paper:#f4f1e8;--lime:#c8f169;--coral:#f1765d;--line:#ccd0c2}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px 'Space Grotesk',sans-serif}main{max-width:1180px;margin:auto;padding:38px 24px}.top{display:flex;justify-content:space-between;align-items:end;border-bottom:2px solid var(--ink);padding-bottom:22px}.eyebrow{font:12px 'IBM Plex Mono',monospace;letter-spacing:1px}.brand{font-size:clamp(2.5rem,7vw,6rem);line-height:.9;font-weight:700;letter-spacing:-3px}.badge{background:var(--lime);padding:10px 14px;border:1px solid var(--ink);font:12px 'IBM Plex Mono',monospace}.toolbar{display:flex;gap:10px;margin:28px 0;flex-wrap:wrap}input,button{border:1px solid var(--ink);padding:13px 15px;font:inherit}input{background:#fff;flex:1;min-width:200px}button{background:var(--ink);color:#fff;cursor:pointer;white-space:nowrap}button:hover{background:var(--coral)}table{width:100%;border-collapse:collapse;background:#fff}th,td{text-align:left;padding:16px;border-bottom:1px solid var(--line)}th{font:11px 'IBM Plex Mono',monospace;text-transform:uppercase;background:#e6e5da}tr[data-id]{cursor:pointer}tr[data-id]:hover td{background:#eeeee2}.score{font-weight:700}.empty{padding:50px;text-align:center;border:1px dashed var(--ink)}.count{font:12px 'IBM Plex Mono',monospace;color:#555;margin-bottom:10px}
-    .detail{position:fixed;inset:0;background:rgba(23,33,31,.55);display:flex;justify-content:flex-end;z-index:10}.panel{background:var(--paper);width:min(720px,100%);height:100%;overflow-y:auto;padding:30px;border-left:2px solid var(--ink)}.panel h2{margin:0 0 4px;font-size:1.6rem}.panel .sub{font:12px 'IBM Plex Mono',monospace;color:#555;margin-bottom:20px}.close{position:absolute;top:26px;right:26px}.sec{margin:22px 0;padding-top:18px;border-top:1px solid var(--line)}.sec h3{font:12px 'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;margin:0 0 10px}.kv{display:grid;grid-template-columns:140px 1fr;gap:6px 12px;font-size:14px}.kv div:nth-child(odd){font:12px 'IBM Plex Mono',monospace;color:#555}.chip{display:inline-block;padding:2px 8px;margin:2px 4px 2px 0;font:11px 'IBM Plex Mono',monospace;border:1px solid var(--ink)}.chip.ok{background:var(--lime)}.chip.bad{background:var(--coral);color:#fff}.finding{background:#fff;border:1px solid var(--line);padding:10px 12px;margin-bottom:8px}.finding .sev{font:11px 'IBM Plex Mono',monospace;font-weight:700}.stagebar{display:flex;gap:6px;flex-wrap:wrap}.stage{padding:4px 10px;font:11px 'IBM Plex Mono',monospace;border:1px solid var(--ink)}.stage.completed{background:var(--lime)}.stage.failed,.stage.timeout{background:var(--coral);color:#fff}pre{white-space:pre-wrap;word-break:break-all;background:#fff;border:1px solid var(--line);padding:10px;font:12px 'IBM Plex Mono',monospace;max-height:180px;overflow-y:auto}
+    :root{--ink:#17211f;--paper:#f4f1e8;--lime:#c8f169;--coral:#f1765d;--line:#ccd0c2}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--paper);color:var(--ink);font:16px 'Space Grotesk',sans-serif}
+    main{max-width:1180px;margin:auto;padding:38px 24px}
+    .top{display:flex;justify-content:space-between;align-items:end;border-bottom:2px solid var(--ink);padding-bottom:22px}
+    .eyebrow{font:12px 'IBM Plex Mono',monospace;letter-spacing:1px}
+    .brand{font-size:clamp(2.5rem,7vw,6rem);line-height:.9;font-weight:700;letter-spacing:-3px}
+    .badge{background:var(--lime);padding:10px 14px;border:1px solid var(--ink);font:12px 'IBM Plex Mono',monospace}
+    .sechead{font:12px 'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:#555;margin:30px 0 6px}
+    .toolbar{display:flex;gap:10px;margin:0 0 10px;flex-wrap:wrap}
+    input,button,select{border:1px solid var(--ink);padding:13px 15px;font:inherit}
+    input{background:#fff;flex:1;min-width:200px}
+    select{background:#fff}
+    button{background:var(--ink);color:#fff;cursor:pointer;white-space:nowrap}
+    button:hover{background:var(--coral)}
+    button.secondary{background:#fff;color:var(--ink)}
+    .searchcard{background:#fff;border:1px solid var(--line);padding:18px;margin:10px 0 28px}
+    .searchcard .pkgname{font-weight:700;font-size:1.15rem}
+    .searchcard .summary{color:#555;font-size:14px;margin:4px 0 14px}
+    table{width:100%;border-collapse:collapse;background:#fff}
+    th,td{text-align:left;padding:16px;border-bottom:1px solid var(--line)}
+    th{font:11px 'IBM Plex Mono',monospace;text-transform:uppercase;background:#e6e5da}
+    tr[data-id]{cursor:pointer}
+    tr[data-id]:hover td{background:#eeeee2}
+    .score{font-weight:700}
+    .empty{padding:50px;text-align:center;border:1px dashed var(--ink)}
+    .count{font:12px 'IBM Plex Mono',monospace;color:#555;margin-bottom:10px}
+    .detail{position:fixed;inset:0;background:rgba(23,33,31,.55);display:flex;justify-content:flex-end;z-index:10}
+    .panel{background:var(--paper);width:min(720px,100%);height:100%;overflow-y:auto;padding:30px;border-left:2px solid var(--ink)}
+    .panel h2{margin:0 0 4px;font-size:1.6rem}
+    .panel .sub{font:12px 'IBM Plex Mono',monospace;color:#555;margin-bottom:20px}
+    .close{position:absolute;top:26px;right:26px}
+    .sec{margin:22px 0;padding-top:18px;border-top:1px solid var(--line)}
+    .sec h3{font:12px 'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;margin:0 0 10px}
+    .kv{display:grid;grid-template-columns:140px 1fr;gap:6px 12px;font-size:14px}
+    .kv div:nth-child(odd){font:12px 'IBM Plex Mono',monospace;color:#555}
+    .chip{display:inline-block;padding:2px 8px;margin:2px 4px 2px 0;font:11px 'IBM Plex Mono',monospace;border:1px solid var(--ink)}
+    .chip.ok{background:var(--lime)}
+    .chip.bad{background:var(--coral);color:#fff}
+    .finding{background:#fff;border:1px solid var(--line);padding:10px 12px;margin-bottom:8px}
+    .finding .sev{font:11px 'IBM Plex Mono',monospace;font-weight:700}
+    .stagebar{display:flex;gap:6px;flex-wrap:wrap}
+    .stage{padding:4px 10px;font:11px 'IBM Plex Mono',monospace;border:1px solid var(--ink)}
+    .stage.completed{background:var(--lime)}
+    .stage.failed,.stage.timeout{background:var(--coral);color:#fff}
+    pre{white-space:pre-wrap;word-break:break-all;background:#fff;border:1px solid var(--line);padding:10px;font:12px 'IBM Plex Mono',monospace;max-height:180px;overflow-y:auto}
     @media(max-width:650px){.top{display:block}.badge{display:inline-block;margin-top:22px}th:nth-child(4),td:nth-child(4){display:none}.panel{width:100%}}
   </style>
 </head>
 <body><main>
 <header class="top"><div><div class="eyebrow">동적 분석 / PyPI 패키지 전용</div><div class="brand">DAST<span style="color:var(--coral)">.</span></div></div><div class="badge">런타임: GVISOR</div></header>
-<section class="toolbar"><input id="package" placeholder="검사할 패키지 (예: requests==2.31.0)"><button onclick="analyze()">+ 분석하기</button><button onclick="loadReports()">새로고침</button></section>
-<section class="toolbar"><input id="search" placeholder="패키지 이름으로 검색" oninput="applyFilter()"></section>
+
+<div class="sechead">새 분석 시작</div>
+<section class="toolbar"><input id="searchTerm" placeholder="검색할 패키지 이름 (예: requests)" onkeydown="if(event.key==='Enter')searchPackage()"><button onclick="searchPackage()">검색하기</button></section>
+<section id="searchResult"></section>
+
+<div class="sechead">분석 결과 목록</div>
+<section class="toolbar"><input id="search" placeholder="결과 목록에서 패키지 이름으로 검색" oninput="applyFilter()"><button class="secondary" onclick="loadReports()">새로고침</button></section>
 <div id="count" class="count"></div>
 <section id="content" class="empty">분석 결과가 없습니다.</section>
 </main>
@@ -42,10 +91,33 @@ function renderTable(rows){
   document.querySelectorAll('tr[data-id]').forEach(tr=>tr.onclick=()=>openDetail(tr.dataset.id));
 }
 
-async function analyze(){
-  const value=document.querySelector('#package').value.trim();if(!value)return;
-  const [pkg,version]=value.split('==');
-  await fetch(api+'/api/analysis',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package:pkg,version:version||null})});
+async function searchPackage(){
+  const name=document.querySelector('#searchTerm').value.trim();
+  if(!name)return;
+  const box=document.querySelector('#searchResult');
+  box.innerHTML='<div class="empty">PyPI에서 검색 중...</div>';
+  let data;
+  try{
+    const r=await fetch(api+'/api/pypi/'+encodeURIComponent(name));
+    if(!r.ok){box.innerHTML=`<div class="empty">"${esc(name)}" 패키지를 PyPI에서 찾지 못했습니다.</div>`;return;}
+    data=await r.json();
+  }catch(e){box.innerHTML='<div class="empty">검색 중 오류가 발생했습니다. 네트워크 연결을 확인하세요.</div>';return;}
+  box.innerHTML=`<div class="searchcard">
+    <div class="pkgname">${esc(data.name)}</div>
+    <div class="summary">${esc(data.summary||'설명 없음')} — 총 ${data.versions.length}개 버전</div>
+    <div class="toolbar">
+      <select id="versionSelect">${data.versions.map(v=>`<option value="${esc(v)}">${esc(v)}${v===data.latest_version?' (최신)':''}</option>`).join('')}</select>
+      <button onclick="analyzeSelected('${esc(data.name)}')">이 버전으로 분석 시작</button>
+      <button class="secondary" onclick="document.querySelector('#searchResult').innerHTML=''">취소</button>
+    </div>
+  </div>`;
+}
+
+async function analyzeSelected(pkg){
+  const version=document.querySelector('#versionSelect').value;
+  await fetch(api+'/api/analysis',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package:pkg,version})});
+  document.querySelector('#searchResult').innerHTML=`<div class="empty">${esc(pkg)}==${esc(version)} 분석을 큐에 등록했습니다. 아래 목록에서 진행 상황을 확인하세요.</div>`;
+  document.querySelector('#searchTerm').value='';
   loadReports();
 }
 
