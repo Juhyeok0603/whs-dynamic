@@ -93,10 +93,13 @@ def analyze_package(package: str, version: str | None = None, artifact="auto", n
                     events.append(runtime.event("import", "process.exec", {"executable": "python", "args": ["-c", f"import {top}"], "parent": None}, "process"))
                 # Post-import probe: exercise the package's own CLI entry points (if any) past their argument parser,
                 # a step further than a bare import without calling arbitrary internal functions. Capped at 3 scripts.
+                # The script path is passed via sys.argv (not interpolated into the -c source) since it comes from
+                # the analyzed package's own (untrusted) entry_points.txt.
+                probe_runner = "import sys, runpy; sys.path.insert(0, '/workspace/site'); path = sys.argv[1]; sys.argv = [path, '--help']; runpy.run_path(path, run_name='__main__')"
                 for script in own_console_scripts(workspace / "site", package)[:3]:
                     if not (workspace / "site" / "bin" / script).exists(): continue
                     gvisor.mark()
-                    probe = run_stage(f"probe:{script}", ["python", f"/workspace/site/bin/{script}", "--help"], workspace, 15, True, network); track(probe)
+                    probe = run_stage(f"probe:{script}", ["python", "-c", probe_runner, f"/workspace/site/bin/{script}"], workspace, 15, True, network); track(probe)
                     events.extend(gvisor.collect(f"probe:{script}"))
                 if custom_command:
                     gvisor.mark()
