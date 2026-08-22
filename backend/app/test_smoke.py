@@ -19,6 +19,21 @@ def test_strace_privilege_escape_dns(tmp_path: Path):
     assert score >= 70
 
 
+def test_pip_platform_probe_not_flagged_as_shell(tmp_path: Path):
+    """Regression: pip's own lsb_release/uname platform-detection calls during install must not be flagged as
+    'shell or downloader' just because the official Python image's PYTHON_SHA256=... env var contains 'sh'."""
+    collector = GvisorStraceCollector(tmp_path)
+    (tmp_path / "runsc.log.1.boot").write_text(
+        'I0822 11:39:20.000000 100 strace.go:570] [   2:   2] python E execve(0x0 /bin/lsb_release, 0x0 ["lsb_release", "-a"], '
+        '0x0 ["HOSTNAME=x", "PYTHON_SHA256=5c8462af5790baf43a321a1559dbe0db06d1be4300fb85fb53c40060668e548a", "HOME=/"])\n'
+    )
+    events = collector.collect("install")
+    assert events[0].data["exe"] == "/bin/lsb_release"
+    findings, score, _ = analyze(events)
+    assert findings == []
+    assert score == 0
+
+
 def test_pcap_and_ebpf_line_parsers():
     assert PcapCollector.parse_line("12:00:00.000001 IP 172.17.0.2.44444 > 8.8.8.8.53: UDP, length 32") == ("172.17.0.2", "8.8.8.8", 53)
     assert PcapCollector.parse_line("garbage") is None

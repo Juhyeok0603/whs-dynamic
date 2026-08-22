@@ -48,6 +48,10 @@ class RuntimeCollector(Collector):
 
 # runsc --strace entry line: "... strace.go:NNN] [ pid: tid] comm E syscall(args"
 _STRACE_LINE = re.compile(r"strace\.go:\d+\]\s+\[\s*(\d+):\s*\d+\]\s+(\S+)\s+E\s+(\w+)\((.*)")
+# execve(pathname, argv[...], envp[...]) — pull out just the exec target and argv, since envp (e.g. the
+# official Python image's PYTHON_SHA256=... env var) would otherwise pollute any substring match on the raw args.
+_EXECVE_PATH = re.compile(r"(/[^\s,]+)")
+_EXECVE_ARGV = re.compile(r"\[(.*?)\]")
 _SENSITIVE = (".aws", ".ssh", ".netrc", "/etc/passwd", "/etc/shadow")
 _PRIVILEGE = ("setuid", "setgid", "setreuid", "setregid", "setresuid", "setresgid", "capset")
 _ESCAPE = ("ptrace", "mount", "umount2", "unshare", "setns", "pivot_root", "chroot", "init_module", "finit_module", "bpf", "keyctl", "add_key")
@@ -89,7 +93,11 @@ class GvisorStraceCollector(Collector):
                 pid, comm, syscall, args = int(match.group(1)), match.group(2), match.group(3), match.group(4)[:512]
                 self.syscall_counts[syscall] += 1
                 if syscall in ("execve", "execveat"):
-                    events.append(NormalizedEvent(source=self.name, category="process", type="process.exec", stage=stage, pid=pid, data={"comm": comm, "args": args}))
+                    path_match = _EXECVE_PATH.search(args)
+                    argv_match = _EXECVE_ARGV.search(args)
+                    exe = path_match.group(1) if path_match else comm
+                    argv = argv_match.group(1) if argv_match else ""
+                    events.append(NormalizedEvent(source=self.name, category="process", type="process.exec", stage=stage, pid=pid, data={"comm": comm, "exe": exe, "argv": argv, "args": args}))
                 elif syscall == "connect":
                     events.append(NormalizedEvent(source=self.name, category="network", type="network.connect", stage=stage, pid=pid, data={"comm": comm, "args": args}))
                     if _DNS_PORT.search(args):
