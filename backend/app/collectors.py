@@ -1,4 +1,5 @@
 from pathlib import Path
+from collections import Counter
 import hashlib
 import os
 import re
@@ -60,6 +61,7 @@ class GvisorStraceCollector(Collector):
     def __init__(self, log_dir: Path):
         self.log_dir = log_dir
         self.seen: set[str] = set()
+        self.syscall_counts: Counter = Counter()  # every syscall seen, not just the ones turned into typed events
         self.mark()
 
     def available(self) -> bool:
@@ -67,6 +69,9 @@ class GvisorStraceCollector(Collector):
 
     def mark(self) -> None:
         self.seen = {p.name for p in self.log_dir.glob("*")} if self.available() else set()
+
+    def totals(self) -> dict[str, int]:
+        return dict(self.syscall_counts)
 
     def collect(self, stage: str, limit: int = 200) -> list[NormalizedEvent]:
         events: list[NormalizedEvent] = []
@@ -82,6 +87,7 @@ class GvisorStraceCollector(Collector):
                 if not match:
                     continue
                 pid, comm, syscall, args = int(match.group(1)), match.group(2), match.group(3), match.group(4)[:512]
+                self.syscall_counts[syscall] += 1
                 if syscall in ("execve", "execveat"):
                     events.append(NormalizedEvent(source=self.name, category="process", type="process.exec", stage=stage, pid=pid, data={"comm": comm, "args": args}))
                 elif syscall == "connect":

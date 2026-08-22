@@ -30,6 +30,7 @@
     tr[data-id]:hover td{background:#eeeee2}
     .score{font-weight:700}
     .empty{padding:50px;text-align:center;border:1px dashed var(--ink)}
+    .empty.small{padding:14px;font-size:13px}
     .count{font:12px 'IBM Plex Mono',monospace;color:#555;margin-bottom:10px}
     .timecell{font:12px 'IBM Plex Mono',monospace;white-space:nowrap}
     .progress{background:#e6e5da;height:8px;width:100%;min-width:90px}
@@ -40,24 +41,37 @@
     .progress.queued>div{background:#aaa}
     .stagelabel{font:11px 'IBM Plex Mono',monospace;color:#555;margin-top:4px;white-space:nowrap}
     .detail{position:fixed;inset:0;background:rgba(23,33,31,.55);display:flex;justify-content:flex-end;z-index:10}
-    .panel{background:var(--paper);width:min(720px,100%);height:100%;overflow-y:auto;padding:30px;border-left:2px solid var(--ink)}
+    .panel{background:var(--paper);width:min(820px,100%);height:100%;overflow-y:auto;padding:30px;border-left:2px solid var(--ink)}
     .panel h2{margin:0 0 4px;font-size:1.6rem}
     .panel .sub{font:12px 'IBM Plex Mono',monospace;color:#555;margin-bottom:6px}
     .close{position:absolute;top:26px;right:26px}
     .sec{margin:22px 0;padding-top:18px;border-top:1px solid var(--line)}
-    .sec h3{font:12px 'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;margin:0 0 10px}
+    .sec h3{font:12px 'IBM Plex Mono',monospace;text-transform:uppercase;letter-spacing:1px;margin:0 0 10px;display:flex;align-items:center;gap:8px}
+    .sec h3 .n{color:#888;font-weight:400}
     .kv{display:grid;grid-template-columns:140px 1fr;gap:6px 12px;font-size:14px}
     .kv div:nth-child(odd){font:12px 'IBM Plex Mono',monospace;color:#555}
     .chip{display:inline-block;padding:2px 8px;margin:2px 4px 2px 0;font:11px 'IBM Plex Mono',monospace;border:1px solid var(--ink)}
     .chip.ok{background:var(--lime)}
     .chip.bad{background:var(--coral);color:#fff}
-    .finding{background:#fff;border:1px solid var(--line);padding:10px 12px;margin-bottom:8px}
+    .chip.neutral{background:#e6e5da}
+    .finding{background:#fff;border:1px solid var(--line);padding:10px 12px;margin-bottom:8px;font-size:13px}
     .finding .sev{font:11px 'IBM Plex Mono',monospace;font-weight:700}
-    .stagebar{display:flex;gap:6px;flex-wrap:wrap}
-    .stage{padding:4px 10px;font:11px 'IBM Plex Mono',monospace;border:1px solid var(--ink)}
-    .stage.completed{background:var(--lime)}
-    .stage.failed,.stage.timeout{background:var(--coral);color:#fff}
-    pre{white-space:pre-wrap;word-break:break-all;background:#fff;border:1px solid var(--line);padding:10px;font:12px 'IBM Plex Mono',monospace;max-height:180px;overflow-y:auto}
+    .stagebar{display:flex;flex-direction:column;gap:6px}
+    details.stagecard{background:#fff;border:1px solid var(--line)}
+    details.stagecard summary{padding:8px 12px;cursor:pointer;font:12px 'IBM Plex Mono',monospace;list-style:none;display:flex;justify-content:space-between;gap:8px}
+    details.stagecard summary::-webkit-details-marker{display:none}
+    details.stagecard summary::before{content:'▸ ';color:#888}
+    details.stagecard[open] summary::before{content:'▾ '}
+    details.stagecard[open] summary{border-bottom:1px solid var(--line)}
+    details.stagecard .badge2{font-weight:700}
+    .stagecard.completed .badge2{color:#3a7d1f}
+    .stagecard.failed .badge2,.stagecard.timeout .badge2{color:var(--coral)}
+    .stdlabel{font:10px 'IBM Plex Mono',monospace;color:#888;text-transform:uppercase;margin:8px 12px -4px}
+    pre{white-space:pre-wrap;word-break:break-all;background:#fff;border:1px solid var(--line);padding:10px;font:12px 'IBM Plex Mono',monospace;max-height:180px;overflow-y:auto;margin:8px 12px}
+    details.stagecard pre{max-height:140px}
+    .eventrow{font:12px 'IBM Plex Mono',monospace;background:#fff;border:1px solid var(--line);padding:6px 10px;margin-bottom:4px;display:flex;gap:10px}
+    .eventrow .tag{color:#888;min-width:70px}
+    .eventrow .body{word-break:break-all;color:var(--ink)}
     @media(max-width:650px){.top{display:block}.badge{display:inline-block;margin-top:22px}th:nth-child(2),td:nth-child(2){display:none}th:nth-child(4),td:nth-child(4){display:none}th:nth-child(6),td:nth-child(6){display:none}.panel{width:100%}}
   </style>
 </head>
@@ -172,6 +186,48 @@ async function analyzeSelected(pkg){
   loadReports();
 }
 
+function stageCard(s){
+  return `<details class="stagecard ${esc(s.status)}">
+    <summary><span>${esc(s.name)}</span><span class="badge2">${esc(t(s.status))} · ${s.duration_seconds}s · exit ${s.exit_code??'-'}</span></summary>
+    ${s.stdout?`<div class="stdlabel">stdout</div><pre>${esc(s.stdout)}</pre>`:''}
+    ${s.stderr?`<div class="stdlabel">stderr</div><pre>${esc(s.stderr)}</pre>`:''}
+    ${!s.stdout&&!s.stderr?'<div class="empty small">출력 없음</div>':''}
+  </details>`;
+}
+
+function eventRows(events, emptyMsg, limit=30){
+  if(!events||!events.length) return `<div class="empty small">${emptyMsg}</div>`;
+  const shown=events.slice(0,limit);
+  const rows=shown.map(e=>`<div class="eventrow"><span class="tag">${esc(e.stage||'-')}${e.pid!=null?' · pid '+e.pid:''}</span><span class="body">${esc(JSON.stringify(e.data))}</span></div>`).join('');
+  const rest=events.length-shown.length;
+  return rows+(rest>0?`<div class="stagelabel">+ ${rest}개 더 (총 ${events.length}개)</div>`:'');
+}
+
+function syscallChips(totals){
+  const entries=Object.entries(totals||{}).sort((a,b)=>b[1]-a[1]);
+  if(!entries.length) return '<div class="empty small">수집된 syscall 정보가 없습니다 (strace collector 비활성 — collector 상태를 확인하세요).</div>';
+  const shown=entries.slice(0,25);
+  const rest=entries.length-shown.length;
+  return shown.map(([name,count])=>`<span class="chip neutral">${esc(name)} × ${count}</span>`).join('')+(rest>0?`<div class="stagelabel">+ ${rest}종류 더</div>`:'');
+}
+
+function flowRows(flows){
+  if(!flows||!flows.length) return '<div class="empty small">캡처된 flow가 없습니다 (network=full일 때만 pcap이 동작).</div>';
+  return flows.map(f=>`<div class="eventrow"><span class="tag">${f.packets}pkt</span><span class="body">${esc(f.src)} → ${esc(f.dst)}:${f.dst_port}</span></div>`).join('');
+}
+
+function hostBoundaryRows(obs){
+  if(!obs||!obs.length) return '<div class="empty small">eBPF 관찰 없음.</div>';
+  return obs.slice(0,30).map(o=>`<div class="eventrow"><span class="tag">${esc(o.type)}</span><span class="body">pid ${o.pid} · ${esc(o.comm)}${o.file?' · '+esc(o.file):''}</span></div>`).join('')+(obs.length>30?`<div class="stagelabel">+ ${obs.length-30}개 더 — 호스트 전체 관찰이라 채점에는 미반영, 참고용</div>`:'<div class="stagelabel">호스트 전체 관찰이라 채점에는 미반영, 참고용</div>');
+}
+
+function fsPathList(entries, limit=40){
+  if(!entries||!entries.length) return '<div class="empty small">없음</div>';
+  const shown=entries.slice(0,limit);
+  const rest=entries.length-shown.length;
+  return `<pre>${esc(shown.map(e=>e.path).join('\n'))}</pre>`+(rest>0?`<div class="stagelabel">+ ${rest}개 더 (총 ${entries.length}개)</div>`:'');
+}
+
 async function openDetail(id){
   const r=await fetch(api+'/api/analysis/'+id);const rep=await r.json();
   if(!rep.summary){
@@ -188,22 +244,39 @@ async function openDetail(id){
     return;
   }
   const cs=rep.collector_status||{};
+  const bh=rep.behavior||{};
   const collectorChip=(name,status)=>`<span class="chip ${/success|active|ready|via /.test(status)?'ok':'bad'}" title="${esc(status)}">${esc(name)}: ${esc(status)}</span>`;
-  const findings=(rep.findings||[]).map(f=>`<div class="finding"><span class="sev">[${esc(f.severity)}]</span> ${esc(f.title)} <span style="color:#555">(${esc(f.rule_id)}, 단계: ${esc(f.stage)}, 신뢰도: ${f.confidence})</span></div>`).join('')||'<div class="empty">탐지된 항목이 없습니다.</div>';
-  const stages=(rep.stages||[]).map(s=>`<span class="stage ${esc(s.status)}" title="exit ${s.exit_code}, ${s.duration_seconds}s">${esc(s.name)}: ${esc(t(s.status))}</span>`).join('');
+  const findings=(rep.findings||[]).map(f=>`<div class="finding"><span class="sev">[${esc(f.severity)}]</span> ${esc(f.title)} <span style="color:#555">(${esc(f.rule_id)}, 단계: ${esc(f.stage)}, 신뢰도: ${f.confidence})</span></div>`).join('')||'<div class="empty small">탐지된 항목이 없습니다.</div>';
+  const stages=(rep.stages||[]).map(stageCard).join('');
   const ru=rep.resource_usage||{};
-  const chains=(rep.behavior_chains||[]).map(c=>`<div class="finding">${esc(c.title)} <span style="color:#555">(신뢰도: ${c.confidence})</span></div>`).join('')||'<div class="empty">연결된 행위 체인이 없습니다.</div>';
+  const chains=(rep.behavior_chains||[]).map(c=>`<div class="finding">${esc(c.title)} <span style="color:#555">(신뢰도: ${c.confidence})</span></div>`).join('')||'<div class="empty small">연결된 행위 체인이 없습니다.</div>';
   document.querySelector('#overlay').innerHTML=`<div class="detail" onclick="closeDetail(event)"><div class="panel" onclick="event.stopPropagation()">
     <button class="close" onclick="closeDetail(event)">닫기</button>
     <h2>${esc(rep.package.name)}${rep.package.version?'=='+esc(rep.package.version):''}</h2>
     <div class="sub">${esc(id)} — 위험도 ${rep.summary.risk_score} / ${esc(rep.summary.severity)} — 샌드박스: ${esc(rep.sandbox?.runtime)} (네트워크: ${esc(rep.sandbox?.network_mode)})</div>
     <div class="sub">시작: ${fmtTime(rep.analysis.started_at)} · 종료: ${fmtTime(rep.analysis.finished_at)} · 소요: ${rep.analysis.duration_seconds}초</div>
 
-    <div class="sec"><h3>실행 단계</h3><div class="stagebar">${stages}</div></div>
+    <div class="sec"><h3>실행 단계 <span class="n">(${(rep.stages||[]).length})</span></h3><div class="stagebar">${stages}</div></div>
 
-    <div class="sec"><h3>탐지 결과 (${rep.findings.length})</h3>${findings}</div>
+    <div class="sec"><h3>탐지 결과 <span class="n">(${rep.findings.length})</span></h3>${findings}</div>
 
     <div class="sec"><h3>행위 체인</h3>${chains}</div>
+
+    <div class="sec"><h3>시스템콜 요약</h3>${syscallChips(bh.syscall_totals)}</div>
+
+    <div class="sec"><h3>프로세스 실행 <span class="n">(${(bh.processes||[]).length})</span></h3>${eventRows(bh.processes,'기록된 프로세스 실행이 없습니다.')}</div>
+
+    <div class="sec"><h3>민감 파일 접근 <span class="n">(${(bh.files||[]).length})</span></h3>${eventRows(bh.files,'민감 경로 접근이 없습니다. (일반 파일 접근 전체가 아닌 .aws/.ssh/.netrc/passwd 등만 추적)')}</div>
+
+    <div class="sec"><h3>네트워크 연결 <span class="n">(${(bh.connections||[]).length})</span></h3>${eventRows(bh.connections,'connect 시도가 없습니다.')}</div>
+
+    <div class="sec"><h3>DNS 조회 <span class="n">(${(bh.dns||[]).length})</span></h3>${eventRows(bh.dns,'DNS 조회가 없습니다.')}</div>
+
+    <div class="sec"><h3>권한/샌드박스 탈출 시도 <span class="n">(${(bh.privilege||[]).length})</span></h3>${eventRows(bh.privilege,'권한 변경이나 탈출 관련 syscall이 없습니다.')}</div>
+
+    <div class="sec"><h3>패킷 캡처 flow <span class="n">(${(bh.flows||[]).length})</span></h3>${flowRows(bh.flows)}</div>
+
+    <div class="sec"><h3>eBPF 호스트 경계 관찰 <span class="n">(${(bh.host_boundary||[]).length})</span></h3>${hostBoundaryRows(bh.host_boundary)}</div>
 
     <div class="sec"><h3>수집기 상태</h3>${Object.entries(cs).map(([k,v])=>collectorChip(k,v)).join('')}</div>
 
@@ -212,18 +285,9 @@ async function openDetail(id){
       <div>cgroup</div><div>${ru.cgroup?`${ru.cgroup.samples}회 샘플링, ${(ru.cgroup.memory_bytes/1048576).toFixed(1)} MB, ${ru.cgroup.pids}개 PID, CPU ${(ru.cgroup.cpu_usec/1e6).toFixed(2)}초`:'—'}</div>
     </div></div>
 
-    <div class="sec"><h3>행위 이벤트 수</h3><div class="kv">
-      <div>프로세스</div><div>${rep.summary.process_events}</div>
-      <div>파일</div><div>${rep.summary.file_events}</div>
-      <div>네트워크</div><div>${rep.summary.network_events}</div>
-      <div>DNS 조회</div><div>${rep.summary.dns_queries}</div>
-    </div></div>
-
-    <div class="sec"><h3>파일시스템 변경</h3><div class="kv">
-      <div>생성</div><div>${rep.filesystem_diff?.created?.length||0}</div>
-      <div>수정</div><div>${rep.filesystem_diff?.modified?.length||0}</div>
-      <div>삭제</div><div>${rep.filesystem_diff?.deleted?.length||0}</div>
-    </div></div>
+    <div class="sec"><h3>파일시스템 변경 — 생성 <span class="n">(${rep.filesystem_diff?.created?.length||0})</span></h3>${fsPathList(rep.filesystem_diff?.created)}</div>
+    <div class="sec"><h3>파일시스템 변경 — 수정 <span class="n">(${rep.filesystem_diff?.modified?.length||0})</span></h3>${fsPathList(rep.filesystem_diff?.modified)}</div>
+    <div class="sec"><h3>파일시스템 변경 — 삭제 <span class="n">(${rep.filesystem_diff?.deleted?.length||0})</span></h3>${fsPathList(rep.filesystem_diff?.deleted)}</div>
 
     ${rep.errors?.length?`<div class="sec"><h3>오류</h3><pre>${esc(rep.errors.join('\n'))}</pre></div>`:''}
   </div></div>`;

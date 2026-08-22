@@ -13,7 +13,8 @@ def analyze(events: list[NormalizedEvent]) -> tuple[list[Finding], int, list[dic
             findings.append(Finding(rule_id="file.sensitive_read", title="Sensitive path read", severity="HIGH", confidence=.9, stage=event.stage, evidence=[event]))
         elif event.type == "network.connect" and ("169.254.169.254" in text or event.data.get("blocked")):
             findings.append(Finding(rule_id="network.metadata_or_blocked", title="Cloud metadata or restricted network access attempted", severity="HIGH", confidence=.92, stage=event.stage, evidence=[event]))
-        elif event.type == "process.exec" and any(x in text for x in ("pip", "python -m pip")):
+        elif event.type == "process.exec" and event.stage not in ("build", "install") and any(x in text for x in ("pip", "python -m pip")):
+            # build/install stages are exempted: that pip invocation is our own harness, not the package's own code
             findings.append(Finding(rule_id="python.runtime_install", title="Runtime package installation attempted", severity="HIGH", confidence=.84, stage=event.stage, evidence=[event]))
         elif event.type == "privilege.change":
             findings.append(Finding(rule_id="privilege.change_attempt", title="Privilege change syscall attempted", severity="MEDIUM", confidence=.8, stage=event.stage, evidence=[event]))

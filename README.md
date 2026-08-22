@@ -40,7 +40,7 @@ API: `POST /api/analysis`, `GET /api/analysis`, `GET /api/analysis/{id}`, `/even
 
 ## 구조
 
-- `backend/app/package.py`: resolve/download/inspect/build/install/import/execute stage orchestration
+- `backend/app/package.py`: resolve/download/inspect/build/install/import/probe:*/execute stage orchestration
 - `backend/app/sandbox.py`: Docker `--runtime runsc`, network, resource limit command builder
 - `backend/app/collectors.py`: filesystem diff와 normalized runtime event 기반
 - `backend/app/analyzer.py`: rule-based finding, scoring, basic correlation
@@ -50,6 +50,6 @@ API: `POST /api/analysis`, `GET /api/analysis`, `GET /api/analysis/{id}`, `/even
 
 ## 현재 한계
 
-gVisor strace collector는 `runsc-trace` Docker runtime(`--debug --strace --debug-log=/var/log/runsc/`)이 등록된 경우 import/execute stage의 exec/connect/privilege/escape/DNS(port 53)/sensitive-open syscall을 report event로 수집합니다. `scripts/setup_ubuntu.sh`가 runtime과 `/var/log/runsc`를 함께 등록하며, 로그 파일은 누적되므로 주기적으로 `sudo rm -f /var/log/runsc/*` 정리가 필요합니다.
+gVisor strace collector는 `runsc-trace` Docker runtime(`--debug --strace --debug-log=/var/log/runsc/`)이 등록된 경우 sandboxed stage(sdist면 build, install, import, probe:*, execute)의 exec/connect/privilege/escape/DNS(port 53)/sensitive-open syscall을 report event로 수집합니다. build/install 단계도 관찰 대상이라 `setup.py`/PEP517 빌드 훅에서 터지는 코드까지 잡히며, analyzer는 그 단계에서 항상 나오는 우리 자신의 `pip install` 호출만 `python.runtime_install` 룰에서 예외 처리합니다(다른 룰은 그대로 적용). import 이후에는 패키지 자신의 `entry_points.txt`에 등록된 콘솔 스크립트를 최대 3개까지 `--help`로 실행해(`probe:<script>` stage) bare import보다 한 단계 더 실행 경로를 관찰합니다 — 임의 내부 함수 호출까지는 하지 않는 선에서 최소한의 post-import 체크입니다. `scripts/setup_ubuntu.sh`가 runtime과 `/var/log/runsc`를 함께 등록하며, 로그 파일은 누적되므로 주기적으로 `sudo rm -f /var/log/runsc/*` 정리가 필요합니다.
 
 추가 collector: `/proc`(runsc 프로세스 RSS)과 docker cgroup(memory/pids/cpu)은 sandboxed stage 동안 background thread로 샘플링되어 `resource_usage`에 기록됩니다. pcap은 tcpdump로 docker0을 캡처하며(`--network full`일 때만 의미 있음, tcpdump에 `cap_net_raw` 필요), eBPF는 bpftrace 기반 host-boundary 관찰자로 `sudo NOPASSWD` 등록이 필요합니다 — 둘 다 setup 스크립트가 설정합니다. eBPF 관찰은 host 전체가 대상이라 analyzer 채점에는 넣지 않고 `behavior.host_boundary`에 교차검증용으로만 기록합니다. 각 collector는 전제조건이 빠지면 report에 사유를 명시하고 가짜 telemetry를 만들지 않습니다. 다음 단계는 fixture package와 API worker 추가입니다.

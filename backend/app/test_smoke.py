@@ -1,7 +1,7 @@
 from pathlib import Path
 from .collectors import EbpfCollector, FilesystemCollector, GvisorStraceCollector, PcapCollector
 from .analyzer import analyze
-from .package import select_artifact
+from .package import own_console_scripts, select_artifact
 from .schemas import NormalizedEvent
 
 
@@ -35,10 +35,44 @@ def test_select_artifact():
     assert select_artifact(files, "flask", "auto") is None
 
 
+def test_own_console_scripts_excludes_dependencies(tmp_path: Path):
+    (tmp_path / "requests-2.31.0.dist-info").mkdir()
+    (tmp_path / "requests-2.31.0.dist-info" / "entry_points.txt").write_text("[console_scripts]\nrequests-cli = requests.cli:main\n")
+    (tmp_path / "idna-3.19.dist-info").mkdir()
+    (tmp_path / "idna-3.19.dist-info" / "entry_points.txt").write_text("[console_scripts]\nidna = idna.cli:main\n")
+    assert own_console_scripts(tmp_path, "requests") == ["requests-cli"]
+    assert own_console_scripts(tmp_path, "flask") == []  # no dist-info -> no scripts, not an error
+
+
+def test_own_console_scripts_no_console_scripts_section(tmp_path: Path):
+    (tmp_path / "pkg-1.0.dist-info").mkdir()
+    (tmp_path / "pkg-1.0.dist-info" / "entry_points.txt").write_text("[not_console_scripts]\nx = y:z\n")
+    assert own_console_scripts(tmp_path, "pkg") == []
+
+
+def test_build_install_stage_exempted_from_runtime_install_rule():
+    exempt = NormalizedEvent(source="gvisor", category="process", type="process.exec", stage="install", data={"comm": "python", "args": "-m pip install ."})
+    flagged = NormalizedEvent(source="gvisor", category="process", type="process.exec", stage="import", data={"comm": "python", "args": "-c import subprocess; subprocess.run(['pip','install','evil'])"})
+    findings, _, _ = analyze([exempt, flagged])
+    assert [f.rule_id for f in findings] == ["python.runtime_install"]
+    assert findings[0].stage == "import"
+
+
 def test_filesystem_diff(tmp_path: Path):
     before = FilesystemCollector().snapshot([tmp_path]); (tmp_path / "x").write_text("x"); after = FilesystemCollector().snapshot([tmp_path])
     assert after["%s" % (tmp_path / "x")]["size"] == 1
     assert len(FilesystemCollector().diff(before, after)["created"]) == 1
+
+
+def test_gvisor_strace_collector_syscall_totals(tmp_path: Path):
+    collector = GvisorStraceCollector(tmp_path)
+    (tmp_path / "runsc.log.1.boot").write_text(
+        "I0821 22:48:11.000000 100 strace.go:570] [   2:   2] python E openat(AT_FDCWD /, 0x0 /tmp/x, O_RDONLY)\n"
+        "I0821 22:48:11.000001 100 strace.go:570] [   2:   2] python E openat(AT_FDCWD /, 0x0 /tmp/y, O_RDONLY)\n"
+        "I0821 22:48:11.000002 100 strace.go:570] [   2:   2] python E read(0x3, 0x0, 0x100)\n"
+    )
+    collector.collect("install")
+    assert collector.totals() == {"openat": 2, "read": 1}
 
 
 def test_gvisor_strace_collector(tmp_path: Path):

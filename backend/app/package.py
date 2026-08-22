@@ -1,3 +1,4 @@
+import configparser
 import re
 import subprocess
 import sys
@@ -18,6 +19,21 @@ def select_artifact(files: list[Path], package: str, artifact: str) -> Path | No
     norm = lambda s: s.lower().replace("-", "_").replace(".", "_")
     candidates = [p for p in files if re.match(re.escape(norm(package)) + r"_\d", norm(p.name))]
     return next((p for p in candidates if artifact == "auto" or (artifact == "wheel" and p.suffix == ".whl") or (artifact == "sdist" and p.suffix in (".gz", ".zip"))), candidates[0] if candidates else None)
+
+
+def own_console_scripts(site_dir: Path, package: str) -> list[str]:
+    """Reads this package's own [console_scripts] entry points (not its dependencies') so import-only analysis can be extended a step further."""
+    norm = lambda s: s.lower().replace("-", "_").replace(".", "_")
+    dist_info = next((p for p in site_dir.glob("*.dist-info") if norm(p.name).startswith(norm(package) + "_")), None)
+    entry_points_file = dist_info / "entry_points.txt" if dist_info else None
+    if not entry_points_file or not entry_points_file.exists():
+        return []
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(entry_points_file)
+    except configparser.Error:
+        return []
+    return list(parser["console_scripts"]) if parser.has_section("console_scripts") else []
 
 
 def run_stage(name, command, cwd, timeout, sandboxed=False, network="restricted"):
@@ -60,16 +76,28 @@ def analyze_package(package: str, version: str | None = None, artifact="auto", n
             host_sampler = HostSamplerCollector(); pcap = PcapCollector(network); ebpf = EbpfCollector()
             for collector in (host_sampler, pcap, ebpf): collector.start()
             try:
+                # build/install run untrusted setup.py / PEP517 build-backend code, so they're strace-observed too;
+                # the analyzer exempts our own "pip install" invocation there instead of skipping collection entirely.
                 if distribution_type == "sdist":
-                    track(run_stage("build", ["python", "-m", "pip", "wheel", "--no-deps", "--no-cache-dir", f"/workspace/{selected.name}", "-w", "/workspace/built"], workspace, 90, True, network))
-                track(run_stage("install", ["python", "-m", "pip", "install", "--no-index", "--find-links", "/workspace", "--target", "/workspace/site", f"/workspace/{selected.name}"], workspace, 60, True, network))
+                    gvisor.mark()
+                    build = run_stage("build", ["python", "-m", "pip", "wheel", "--no-deps", "--no-cache-dir", f"/workspace/{selected.name}", "-w", "/workspace/built"], workspace, 90, True, network); track(build)
+                    events.extend(gvisor.collect("build"))
+                gvisor.mark()
+                install = run_stage("install", ["python", "-m", "pip", "install", "--no-index", "--find-links", "/workspace", "--target", "/workspace/site", f"/workspace/{selected.name}"], workspace, 60, True, network); track(install)
+                events.extend(gvisor.collect("install"))
                 top = package.lower().replace("-", "_")
-                # ponytail: strace is only harvested for import/execute — install/build legitimately run pip and would false-positive the analyzer
                 gvisor.mark()
                 import_stage = run_stage("import", ["python", "-c", f"import sys; sys.path.insert(0, '/workspace/site'); import {top}"], workspace, 30, True, network); track(import_stage)
                 events.extend(gvisor.collect("import"))
                 if import_stage.status == "completed":
                     events.append(runtime.event("import", "process.exec", {"executable": "python", "args": ["-c", f"import {top}"], "parent": None}, "process"))
+                # Post-import probe: exercise the package's own CLI entry points (if any) past their argument parser,
+                # a step further than a bare import without calling arbitrary internal functions. Capped at 3 scripts.
+                for script in own_console_scripts(workspace / "site", package)[:3]:
+                    if not (workspace / "site" / "bin" / script).exists(): continue
+                    gvisor.mark()
+                    probe = run_stage(f"probe:{script}", ["python", f"/workspace/site/bin/{script}", "--help"], workspace, 15, True, network); track(probe)
+                    events.extend(gvisor.collect(f"probe:{script}"))
                 if custom_command:
                     gvisor.mark()
                     execute = run_stage("execute", custom_command, workspace, 30, True, network); track(execute)
@@ -78,7 +106,7 @@ def analyze_package(package: str, version: str | None = None, artifact="auto", n
                 for collector in (host_sampler, pcap, ebpf): collector.stop()
             after = fs.snapshot([workspace]); diff = fs.diff(before, after)
             dns_events = [e.model_dump() for e in events if e.category == "dns"] + [dict(source="pcap", **f) for f in pcap.summary() if f["dst_port"] == 53]
-            behavior = {"processes": [e.model_dump() for e in events if e.category == "process"], "files": [e.model_dump() for e in events if e.category == "file"], "dns": dns_events, "connections": [e.model_dump() for e in events if e.category == "network"], "privilege": [e.model_dump() for e in events if e.category == "privilege"], "flows": pcap.summary(), "host_boundary": ebpf.observations}
+            behavior = {"processes": [e.model_dump() for e in events if e.category == "process"], "files": [e.model_dump() for e in events if e.category == "file"], "dns": dns_events, "connections": [e.model_dump() for e in events if e.category == "network"], "privilege": [e.model_dump() for e in events if e.category == "privilege"], "flows": pcap.summary(), "host_boundary": ebpf.observations, "syscall_totals": gvisor.totals()}
             findings, score, chains = analyze(events)
             finished = now()
             gvisor_status = "strace collector active" if strace_active else (sandbox_reason if not sandbox_ready else f"isolation only: {settings.sandbox_runtime}-trace runtime or {settings.gvisor_log_dir} missing (run scripts/setup_ubuntu.sh)")
