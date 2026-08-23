@@ -31,21 +31,30 @@ _MAX_DEPENDENCY_DOWNLOADS = 20  # a pathologically dependency-heavy upload shoul
 _BUILD_BACKEND_PACKAGES = ("setuptools", "wheel", "poetry-core", "flit_core", "hatchling", "pdm-backend", "setuptools-scm")
 
 
-def ensure_build_backends_cached(cache_dir: Path) -> list[Path]:
-    """Host-side, one-time download (subsequent analyses reuse the same cache_dir) of _BUILD_BACKEND_PACKAGES.
-    Never raises — an empty/partial cache just means the build stage falls back to today's behavior
-    (needs real network to fetch whatever backend it's missing) for that one analysis, not a crash."""
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    if any(cache_dir.iterdir()):
-        return list(cache_dir.iterdir())
+def ensure_build_backends_cached(cache_dir: Path, python_version: str) -> list[Path]:
+    """Host-side, one-time download per python_version (subsequent analyses targeting the same version
+    reuse that subfolder) of _BUILD_BACKEND_PACKAGES. Scoped by python_version — not just a single shared
+    cache — because a build backend's *latest* release can drop support for an older Python entirely
+    (poetry-core 2.4.1 requires >=3.10; a package needing Python 3.8 needs an older poetry-core release
+    instead). `pip download --python-version X --only-binary :all:` lets this host (running whatever
+    Python it runs) fetch a wheel actually compatible with the sandbox's target version — safe here since
+    every package in _BUILD_BACKEND_PACKAGES ships a universal (py3-none-any) wheel, no host/target
+    platform mismatch to worry about. Never raises — an empty/partial cache just means the build stage
+    falls back to today's behavior (needs real network to fetch whatever backend it's missing) for that
+    one analysis, not a crash."""
+    version_cache_dir = cache_dir / python_version
+    version_cache_dir.mkdir(parents=True, exist_ok=True)
+    if any(version_cache_dir.iterdir()):
+        return list(version_cache_dir.iterdir())
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", "--retries", "1", "--timeout", "15", "--dest", str(cache_dir), *_BUILD_BACKEND_PACKAGES],
+            [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", "--retries", "1", "--timeout", "15",
+             "--python-version", python_version, "--only-binary", ":all:", "--dest", str(version_cache_dir), *_BUILD_BACKEND_PACKAGES],
             capture_output=True, text=True, timeout=120,
         )
     except (subprocess.TimeoutExpired, OSError):
         pass
-    return list(cache_dir.iterdir())
+    return list(version_cache_dir.iterdir())
 
 
 def _safe_call(fn, *args, fallback=None, **kwargs):
@@ -238,6 +247,7 @@ def analyze_package(package: str | None = None, version: str | None = None, arti
             # support an old Python — a single fixed sandbox image can't run those at all, so pick a
             # supported image version that actually satisfies the package's own Requires-Python.
             python_image = select_python_image(metadata.get("requires_python"))
+            python_version = python_image.removeprefix("python:").removesuffix("-slim")
             if local_artifact:
                 # The PyPI-name path's own "download" stage (no --no-deps) fetches the full dependency
                 # tree alongside the artifact for free; an upload skips that call entirely (there's no
@@ -286,7 +296,7 @@ def analyze_package(package: str | None = None, version: str | None = None, arti
                     # by pip's own build-isolation subprocess, which inherits --no-index/--find-links from
                     # this outer call — copying the cached backend wheels into workspace first is what
                     # actually makes them reachable at /workspace inside the container.
-                    for wheel in ensure_build_backends_cached(settings.data_dir / "_build_backends"):
+                    for wheel in ensure_build_backends_cached(settings.data_dir / "_build_backends", python_version):
                         try:
                             shutil.copy(wheel, workspace / wheel.name)
                         except OSError:

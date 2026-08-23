@@ -126,12 +126,24 @@ def test_prefetch_declared_dependencies_uses_raw_requirement_and_respects_limit(
 def test_ensure_build_backends_cached_skips_download_when_already_populated(tmp_path: Path, monkeypatch):
     """The build-backend cache is meant to be filled once and reused across analyses — a populated cache_dir
     must short-circuit before ever shelling out to pip download again."""
-    (tmp_path / "setuptools-70.0.0-py3-none-any.whl").write_bytes(b"fake wheel")
+    (tmp_path / "3.8").mkdir()
+    (tmp_path / "3.8" / "setuptools-70.0.0-py3-none-any.whl").write_bytes(b"fake wheel")
     called = []
     monkeypatch.setattr("backend.app.package.subprocess.run", lambda *a, **k: called.append(a))
-    result = ensure_build_backends_cached(tmp_path)
+    result = ensure_build_backends_cached(tmp_path, "3.8")
     assert not called  # never shelled out — cache already had something in it
     assert [p.name for p in result] == ["setuptools-70.0.0-py3-none-any.whl"]
+
+
+def test_ensure_build_backends_cached_scopes_by_python_version(tmp_path: Path, monkeypatch):
+    """Regression: a shared cache with no python_version scoping could serve a build backend release
+    (e.g. poetry-core's latest, which requires Python >=3.10) into a sandbox targeting an older Python
+    (3.8) the analyzed package itself needs — must pass --python-version through and use separate
+    subfolders so 3.8 and 3.12 never share a cache."""
+    monkeypatch.setattr("backend.app.package.subprocess.run", lambda *a, **k: None)
+    ensure_build_backends_cached(tmp_path, "3.8")
+    ensure_build_backends_cached(tmp_path, "3.12")
+    assert (tmp_path / "3.8").is_dir() and (tmp_path / "3.12").is_dir()
 
 
 def test_select_artifact():

@@ -61,6 +61,14 @@ degrade — 실제 사용된 이미지는 `report.sandbox.python_image`에서 �
 `docker pull`이 필요해 호스트 자체 인터넷이 있어야 합니다(샌드박스 네트워크 모드와 무관 — 기존 `pip
 download`/registry 조회와 같은 호스트 사이드 동작).
 
+sdist를 오프라인으로 빌드하기 위해 `package.ensure_build_backends_cached()`가 `setuptools`/`wheel`/
+`poetry-core`/`flit_core`/`hatchling`/`pdm-backend`/`setuptools-scm`을 호스트에서 미리 받아 `build`
+스테이지에 `--no-index --find-links`로 넘겨주는데, 이 캐시는 **Python 버전별로 따로** 관리됩니다
+(`data/analyses/_build_backends/<버전>/`) — 빌드 백엔드의 최신판이 오래된 Python 지원을 끊는 경우가 실제로
+있어서(예: `poetry-core` 2.4.1은 Python 3.10 이상만 지원, `Requires-Python`이 3.8인 패키지엔 못 씀),
+`pip download --python-version <버전> --only-binary :all:`로 호스트의 Python과 무관하게 타깃 버전에 실제로
+맞는 wheel을 받아옵니다.
+
 ## 구조
 
 - `backend/app/package.py`: resolve/download/inspect/build/install/import/probe:*/execute stage orchestration
