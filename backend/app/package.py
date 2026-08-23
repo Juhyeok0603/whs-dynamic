@@ -17,7 +17,7 @@ from .schemas import AnalysisReport, NormalizedEvent, StageResult, now
 from .collectors import EbpfCollector, FilesystemCollector, GvisorStraceCollector, HostSamplerCollector, PcapCollector, RuntimeCollector
 from .analyzer import analyze
 from .storage import save_report, write_log_bundle
-from .sandbox import check_runtime, docker_command, select_python_image
+from .sandbox import check_runtime, docker_command, ensure_python_image_pulled, select_python_image
 from . import instrumentation, pcap_tls, registry, static_scan
 from .sinkhole import Sinkhole
 from .signals import build_all as build_signals
@@ -248,6 +248,7 @@ def analyze_package(package: str | None = None, version: str | None = None, arti
             # supported image version that actually satisfies the package's own Requires-Python.
             python_image = select_python_image(metadata.get("requires_python"))
             python_version = python_image.removeprefix("python:").removesuffix("-slim")
+            ensure_python_image_pulled(python_image)
             if local_artifact:
                 # The PyPI-name path's own "download" stage (no --no-deps) fetches the full dependency
                 # tree alongside the artifact for free; an upload skips that call entirely (there's no

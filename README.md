@@ -54,12 +54,16 @@ PyPI 이름 경로의 "download" 스테이지는 `--no-deps` 없이 돌아서 �
 좁은 범위만 지원하는 경우가 있습니다 — 샌드박스가 `python:3.12-slim` 하나만 썼다면 이런 패키지는
 build/install이 "requires a different Python"으로 항상 실패합니다. `read_package_metadata`가 아티팩트의
 `Requires-Python`을 읽고, `sandbox.select_python_image()`가 `packaging.specifiers.SpecifierSet`으로 그
-제약을 만족하는 **가장 최신** 지원 버전(`3.8`~`3.13`, 전부 gVisor+계측 검증된 공식 `python:X.Y-slim` 태그)을
-골라 그 이미지로 build/install/import/probe/execute를 돌립니다. 제약이 없거나 파싱 실패, 또는 지원 범위
-밖(예: 3.6 이하 요구)이면 검증 안 된 이미지를 추측하지 않고 기존 기본값(`python:3.12-slim`)으로 그대로
-degrade — 실제 사용된 이미지는 `report.sandbox.python_image`에서 확인 가능합니다. 처음 쓰는 버전은
-`docker pull`이 필요해 호스트 자체 인터넷이 있어야 합니다(샌드박스 네트워크 모드와 무관 — 기존 `pip
-download`/registry 조회와 같은 호스트 사이드 동작).
+제약을 검사합니다 — 기존 기본값(`python:3.12-slim`)이 제약을 만족하면(대부분의 평범한 패키지는 하한만
+선언하므로 거의 항상 여기 해당) **그대로 기본값을 씁니다**. 기본값이 제약을 만족 못 할 때만 지원
+버전(`3.8`~`3.13`, 전부 gVisor+계측 검증된 공식 `python:X.Y-slim` 태그) 중 만족하는 **가장 최신** 버전으로
+갈아탑니다. 제약이 없거나 파싱 실패, 또는 지원 범위 밖(예: 3.6 이하 요구)이면 검증 안 된 이미지를 추측하지
+않고 기존 기본값으로 그대로 degrade — 실제 사용된 이미지는 `report.sandbox.python_image`에서 확인
+가능합니다. 기본값이 아닌 이미지로 갈아탈 때는 build/install/import/probe/execute 스테이지를 돌리기 전에
+`sandbox.ensure_python_image_pulled()`가 먼저 `docker pull`을 끝내둡니다 — 처음 쓰는 이미지의 pull 시간이
+스테이지 자체의 짧은 timeout(예: install 60초)을 갉아먹다가 timeout으로 죽는 걸 막기 위함입니다(기본값
+이미지는 이미 있다고 보고 이 pull 자체를 건너뜁니다). 이미지 pull은 호스트 자체 인터넷이 있어야 합니다
+(샌드박스 네트워크 모드와 무관 — 기존 `pip download`/registry 조회와 같은 호스트 사이드 동작).
 
 sdist를 오프라인으로 빌드하기 위해 `package.ensure_build_backends_cached()`가 `setuptools`/`wheel`/
 `poetry-core`/`flit_core`/`hatchling`/`pdm-backend`/`setuptools-scm`을 호스트에서 미리 받아 `build`

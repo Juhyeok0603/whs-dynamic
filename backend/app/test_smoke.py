@@ -2,6 +2,7 @@ import json
 import shutil
 import socket
 import struct
+import subprocess
 import zipfile
 from pathlib import Path
 import pytest
@@ -57,9 +58,31 @@ def test_select_python_image_picks_a_supported_version_satisfying_requires_pytho
     the sandbox's single fixed python:3.12-slim image — this needs to actually pick 3.8 for it."""
     assert sandbox.select_python_image(None) == "python:3.12-slim"
     assert sandbox.select_python_image(">=3.8.0,<3.9") == "python:3.8-slim"
-    assert sandbox.select_python_image(">=3.10") == "python:3.13-slim"  # newest supported satisfying it
+    assert sandbox.select_python_image(">=3.10") == "python:3.12-slim"  # default already satisfies it — prefer it
+    assert sandbox.select_python_image(">=3.13") == "python:3.13-slim"  # default can't satisfy — pick newest that can
     assert sandbox.select_python_image("not a real specifier!!") == "python:3.12-slim"
     assert sandbox.select_python_image("<3.6") == "python:3.12-slim"  # no supported version satisfies it
+
+
+def test_ensure_python_image_pulled_skips_default_image(monkeypatch):
+    """The default image is assumed already present — must never shell out for it."""
+    calls = []
+    monkeypatch.setattr(sandbox.subprocess, "run", lambda *a, **k: calls.append(a))
+    sandbox.ensure_python_image_pulled("python:3.12-slim")
+    assert calls == []
+
+
+def test_ensure_python_image_pulled_pulls_missing_non_default_image(monkeypatch):
+    """A non-default image not yet present locally should trigger a docker pull."""
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        returncode = 0 if cmd[:2] == ["docker", "pull"] else 1
+        return subprocess.CompletedProcess(cmd, returncode, "", "")
+    monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+    sandbox.ensure_python_image_pulled("python:3.8-slim")
+    assert calls[0][:3] == ["docker", "image", "inspect"]
+    assert calls[1][:2] == ["docker", "pull"]
 
 
 def test_guess_package_name_from_uploaded_filename():

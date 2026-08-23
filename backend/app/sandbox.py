@@ -7,7 +7,8 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import Version
 from .config import settings
 
-_DEFAULT_PYTHON_IMAGE = "python:3.12-slim"
+_DEFAULT_PYTHON_VERSION = "3.12"
+_DEFAULT_PYTHON_IMAGE = f"python:{_DEFAULT_PYTHON_VERSION}-slim"
 # Official python:X.Y-slim tags we've actually run gVisor + our sitecustomize instrumentation against.
 # Anything a package's Requires-Python needs outside this range falls back to the default rather than
 # guessing at an untested image tag.
@@ -21,19 +22,42 @@ def select_python_image(requires_python: str | None) -> str:
     """Picks a python:X.Y-slim image whose version satisfies the package's own declared Requires-Python
     (PEP 440 specifier) — some real-world packages (seen on actual malicious samples generated from a
     stale cookiecutter template) only support e.g. '<3.9,>=3.8.0' and simply can't build/install under
-    whatever single Python version the sandbox happens to run. Prefers the newest supported version that
-    satisfies the constraint (closest to a real end-user's environment)."""
+    whatever single Python version the sandbox happens to run. Prefers the existing default (3.12) whenever
+    it already satisfies the constraint — which covers the overwhelming majority of ordinary packages, who
+    just declare a lower bound like '>=3.8' with no upper bound — so this only ever deviates for a package
+    that genuinely can't run under 3.12; ordinary analyses keep using the already-pulled-and-tested image
+    instead of racing a first-time pull of some other version against a sandboxed stage's own timeout."""
     if not requires_python:
         return _DEFAULT_PYTHON_IMAGE
     try:
         spec = SpecifierSet(requires_python)
     except InvalidSpecifier:
         return _DEFAULT_PYTHON_IMAGE
+    if spec.contains(_DEFAULT_PYTHON_VERSION, prereleases=True):
+        return _DEFAULT_PYTHON_IMAGE
     candidates = [v for v in _SUPPORTED_PYTHON_VERSIONS if spec.contains(v, prereleases=True)]
     if not candidates:
         return _DEFAULT_PYTHON_IMAGE
     chosen = max(candidates, key=Version)
     return f"python:{chosen}-slim"
+
+
+def ensure_python_image_pulled(image: str, timeout: int = 300) -> None:
+    """Pre-pulls a non-default python image (see select_python_image) so a first-time multi-layer pull
+    doesn't have to compete with a sandboxed stage's own, much shorter timeout (e.g. 'install' only gets
+    60s total — a fresh image pull alone can already eat 10-20s+, causing a real 'install' to time out
+    before pip even starts, as seen in practice). Best-effort and skipped entirely for the default image
+    (already expected to be present from ordinary use) — if docker itself is unavailable or the pull fails,
+    the first sandboxed stage's own docker run surfaces the real underlying error instead."""
+    if image == _DEFAULT_PYTHON_IMAGE:
+        return
+    try:
+        inspect = subprocess.run(["docker", "image", "inspect", image], capture_output=True, text=True, timeout=10)
+        if inspect.returncode == 0:
+            return
+        subprocess.run(["docker", "pull", image], capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
 
 
 def check_runtime() -> tuple[bool, str, str]:
