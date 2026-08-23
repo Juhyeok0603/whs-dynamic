@@ -22,6 +22,28 @@ from .sinkhole import Sinkhole
 from .signals import build_all as build_signals
 
 _DOMAIN_INTEL_LIMIT = 10  # WHOIS + reputation lookups are slow network round-trips; cap per analysis
+# Common PEP 517 [build-system].requires backends. These are trusted infra (not the analyzed package
+# itself), so caching them once and feeding them to the sandboxed "build" stage via --find-links keeps
+# that stage offline like every other stage, instead of needing real internet just to fetch a standard
+# build tool — see ensure_build_backends_cached.
+_BUILD_BACKEND_PACKAGES = ("setuptools", "wheel", "poetry-core", "flit_core", "hatchling", "pdm-backend", "setuptools-scm")
+
+
+def ensure_build_backends_cached(cache_dir: Path) -> list[Path]:
+    """Host-side, one-time download (subsequent analyses reuse the same cache_dir) of _BUILD_BACKEND_PACKAGES.
+    Never raises — an empty/partial cache just means the build stage falls back to today's behavior
+    (needs real network to fetch whatever backend it's missing) for that one analysis, not a crash."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    if any(cache_dir.iterdir()):
+        return list(cache_dir.iterdir())
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", "--retries", "1", "--timeout", "15", "--dest", str(cache_dir), *_BUILD_BACKEND_PACKAGES],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return list(cache_dir.iterdir())
 
 
 def _safe_call(fn, *args, fallback=None, **kwargs):
@@ -192,8 +214,17 @@ def analyze_package(package: str | None = None, version: str | None = None, arti
                 # build/install run untrusted setup.py / PEP517 build-backend code, so they're strace-observed too;
                 # the analyzer exempts our own "pip install" invocation there instead of skipping collection entirely.
                 if distribution_type == "sdist":
+                    # A pyproject.toml's [build-system].requires (poetry-core, hatchling, ...) is fetched
+                    # by pip's own build-isolation subprocess, which inherits --no-index/--find-links from
+                    # this outer call — copying the cached backend wheels into workspace first is what
+                    # actually makes them reachable at /workspace inside the container.
+                    for wheel in ensure_build_backends_cached(settings.data_dir / "_build_backends"):
+                        try:
+                            shutil.copy(wheel, workspace / wheel.name)
+                        except OSError:
+                            pass
                     gvisor.mark()
-                    build = run_stage("build", ["python", "-m", "pip", "wheel", "--no-deps", "--no-cache-dir", f"/workspace/{selected.name}", "-w", "/workspace/built"], workspace, 90, True, effective_network, stage_env("build"), dns_ip, docker_net); track(build)
+                    build = run_stage("build", ["python", "-m", "pip", "wheel", "--no-deps", "--no-cache-dir", "--no-index", "--find-links", "/workspace", f"/workspace/{selected.name}", "-w", "/workspace/built"], workspace, 90, True, effective_network, stage_env("build"), dns_ip, docker_net); track(build)
                     events.extend(gvisor.collect("build"))
                 gvisor.mark()
                 install = run_stage("install", ["python", "-m", "pip", "install", "--no-index", "--find-links", "/workspace", "--target", "/workspace/site", f"/workspace/{selected.name}"], workspace, 60, True, effective_network, stage_env("install"), dns_ip, docker_net); track(install)

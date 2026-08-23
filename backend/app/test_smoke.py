@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from .collectors import EbpfCollector, FilesystemCollector, GvisorStraceCollector, PcapCollector
 from .analyzer import analyze
-from .package import guess_package_name, own_console_scripts, read_package_metadata, select_artifact
+from .package import ensure_build_backends_cached, guess_package_name, own_console_scripts, read_package_metadata, select_artifact
 from .schemas import NormalizedEvent
 from . import pcap_tls, registry, signals, sinkhole, static_scan
 
@@ -72,6 +72,17 @@ def test_read_package_metadata_finds_pkg_info_in_zip_sdist(tmp_path: Path):
     assert metadata["raw_available"] is True
     assert metadata["name"] == "weird-sdist"
     assert metadata["version"] == "1.0"
+
+
+def test_ensure_build_backends_cached_skips_download_when_already_populated(tmp_path: Path, monkeypatch):
+    """The build-backend cache is meant to be filled once and reused across analyses — a populated cache_dir
+    must short-circuit before ever shelling out to pip download again."""
+    (tmp_path / "setuptools-70.0.0-py3-none-any.whl").write_bytes(b"fake wheel")
+    called = []
+    monkeypatch.setattr("backend.app.package.subprocess.run", lambda *a, **k: called.append(a))
+    result = ensure_build_backends_cached(tmp_path)
+    assert not called  # never shelled out — cache already had something in it
+    assert [p.name for p in result] == ["setuptools-70.0.0-py3-none-any.whl"]
 
 
 def test_select_artifact():
