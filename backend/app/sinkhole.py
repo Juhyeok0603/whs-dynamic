@@ -267,6 +267,11 @@ class Sinkhole:
                 s.close()
             except OSError:
                 pass
+        # Matches the "success (...)" convention every other collector's status uses once it's done
+        # (PcapCollector, EbpfCollector) — the dashboard's status chip greys/reds anything that doesn't
+        # contain one of those success-ish words, so leaving this at "capturing (bind ...)" forever would
+        # show a completed, successful sinkhole run as a red/failed chip.
+        self.status = f"success ({len(self._captures)} HTTP request(s) captured, bind {self.bind_ip})"
 
     def records(self) -> list[dict[str, Any]]:
         with self._lock:
