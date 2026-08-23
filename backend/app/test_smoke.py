@@ -8,6 +8,7 @@ import pytest
 from .collectors import EbpfCollector, FilesystemCollector, GvisorStraceCollector, PcapCollector
 from .analyzer import analyze
 from .package import ensure_build_backends_cached, guess_package_name, own_console_scripts, prefetch_declared_dependencies, read_package_metadata, select_artifact
+from .package import _parse_pyproject_python_and_deps
 from .schemas import NormalizedEvent
 from . import pcap_tls, registry, sandbox, signals, sinkhole, static_scan
 
@@ -69,6 +70,32 @@ def test_guess_package_name_from_uploaded_filename():
     assert guess_package_name("malicious-sample-2.3.tar.gz") == "malicious-sample"
     assert guess_package_name("no-version-marker-here.zip") == "no-version-marker-here"
     assert guess_package_name("noext") == "noext"
+
+
+def test_read_package_metadata_falls_back_to_pyproject_toml_when_pkg_info_is_a_stub(tmp_path: Path):
+    """Regression: a real malicious sample's shipped PKG-INFO was a near-empty stub (Metadata-Version/
+    Name/Version only, no Requires-Python/Requires-Dist at all) — those constraints only ever existed in
+    pyproject.toml (PEP 621 [project] table here), which pip discovers by calling the build backend but
+    read_package_metadata never looked at before this fix."""
+    artifact = tmp_path / "roblox_com-0.0.0.zip"
+    with zipfile.ZipFile(artifact, "w") as zf:
+        zf.writestr("roblox_com-0.0.0/PKG-INFO", "Metadata-Version: 2.1\nName: Roblox. com\nVersion: 0.0.0\n")
+        zf.writestr("roblox_com-0.0.0/pyproject.toml", '[project]\nrequires-python = "<3.9,>=3.8.0"\ndependencies = ["Faker<16.0.0,>=15.3.1"]\n')
+    metadata = read_package_metadata(artifact)
+    assert metadata["requires_python"] == "<3.9,>=3.8.0"
+    assert metadata["requires_dist_raw"] == ["Faker<16.0.0,>=15.3.1"]
+    assert metadata["declared_dependencies"] == ["faker"]
+
+
+def test_parse_pyproject_reads_poetry_style_dependencies_table():
+    """Poetry's pre-PEP621 [tool.poetry.dependencies] is a TOML table (name -> version string or {version,
+    optional, ...} table), not a list of PEP 508 strings like [project.dependencies] — must handle both."""
+    raw = '[tool.poetry.dependencies]\npython = ">=3.8,<3.9"\nFaker = ">=15.3.1,<16.0.0"\nrequests = {version = "^2.0", optional = true}\n'
+    requires_python, deps = _parse_pyproject_python_and_deps(raw)
+    assert requires_python == ">=3.8,<3.9"
+    assert "Faker>=15.3.1,<16.0.0" in deps
+    assert "requests^2.0" in deps
+    assert not any(d.lower().startswith("python") for d in deps)  # python itself must be excluded from deps
 
 
 def test_read_package_metadata_finds_pkg_info_in_zip_sdist(tmp_path: Path):

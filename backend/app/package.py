@@ -8,6 +8,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 import uuid
 import zipfile
 from pathlib import Path
@@ -56,10 +57,41 @@ def _safe_call(fn, *args, fallback=None, **kwargs):
         return fallback if fallback is not None else {"status": "unavailable", "reason": str(exc)}
 
 
+def _parse_pyproject_python_and_deps(pyproject_raw: str | None) -> tuple[str | None, list[str]]:
+    """Fallback for when the bundled PKG-INFO/METADATA declares no Requires-Python/Requires-Dist at all —
+    seen on a real sample whose shipped PKG-INFO was a near-empty stub (Metadata-Version/Name/Version
+    only), while the actual constraints only ever existed in pyproject.toml and get surfaced by pip
+    calling the build backend directly (which read_package_metadata, reading the static file, never does).
+    Covers PEP 621's [project] table and Poetry's pre-621 [tool.poetry.dependencies] table. Poetry's own
+    caret/tilde shorthand (^1.2, ~1.2) is passed through as-is, not translated to PEP 440 — a package using
+    that shorthand for python just falls back to the default sandbox image via select_python_image's
+    already-existing SpecifierSet parse failure, same as any other unparseable string."""
+    if not pyproject_raw:
+        return None, []
+    try:
+        data = tomllib.loads(pyproject_raw)
+    except tomllib.TOMLDecodeError:
+        return None, []
+    project = data.get("project") or {}
+    requires_python = project.get("requires-python")
+    dependencies = list(project.get("dependencies") or [])
+    poetry_deps = ((data.get("tool") or {}).get("poetry") or {}).get("dependencies") or {}
+    if requires_python is None:
+        requires_python = poetry_deps.get("python")
+    if not dependencies:
+        for dep_name, spec in poetry_deps.items():
+            if dep_name.lower() == "python":
+                continue
+            version = spec if isinstance(spec, str) else (spec.get("version") if isinstance(spec, dict) else None)
+            dependencies.append(f"{dep_name}{version}" if version else dep_name)
+    return requires_python, dependencies
+
+
 def read_package_metadata(artifact_path: Path) -> dict:
     """Reads the artifact's own METADATA/PKG-INFO (RFC 822 headers) for declared dependencies — this works
-    even if the PyPI registry lookup fails, since the file ships inside the wheel/sdist itself."""
-    raw = None
+    even if the PyPI registry lookup fails, since the file ships inside the wheel/sdist itself. Falls back
+    to pyproject.toml (see _parse_pyproject_python_and_deps) for whatever PKG-INFO/METADATA didn't have."""
+    raw = pyproject_raw = None
     try:
         if artifact_path.suffix in (".whl", ".zip"):
             with zipfile.ZipFile(artifact_path) as zf:
@@ -68,11 +100,16 @@ def read_package_metadata(artifact_path: Path) -> dict:
                 # most use .tar.gz) has PKG-INFO instead, same as the tarfile branch below.
                 name = next((n for n in names if n.endswith(".dist-info/METADATA")), None) or next((n for n in names if n.endswith("PKG-INFO")), None)
                 raw = zf.read(name).decode("utf-8", errors="replace") if name else None
+                pyproject_name = next((n for n in names if n.endswith("pyproject.toml")), None)
+                pyproject_raw = zf.read(pyproject_name).decode("utf-8", errors="replace") if pyproject_name else None
         else:
             with tarfile.open(artifact_path) as tf:
                 name = next((n for n in tf.getnames() if n.endswith("PKG-INFO")), None)
                 member = tf.extractfile(name) if name else None
                 raw = member.read().decode("utf-8", errors="replace") if member else None
+                pyproject_name = next((n for n in tf.getnames() if n.endswith("pyproject.toml")), None)
+                pyproject_member = tf.extractfile(pyproject_name) if pyproject_name else None
+                pyproject_raw = pyproject_member.read().decode("utf-8", errors="replace") if pyproject_member else None
     except (OSError, KeyError, tarfile.TarError, zipfile.BadZipFile, RuntimeError):
         # RuntimeError: zipfile raises this (not BadZipFile) for a password-protected/encrypted member —
         # seen in the wild on an adversarial sample whose own PKG-INFO was zip-encrypted, presumably to
@@ -80,12 +117,15 @@ def read_package_metadata(artifact_path: Path) -> dict:
         # either way; the encryption itself is exactly the kind of anomaly static-scan/reputation signals
         # should be flagging, not something metadata-reading should crash the whole analysis over.
         pass
+    pyproject_python, pyproject_deps = _parse_pyproject_python_and_deps(pyproject_raw)
     if raw is None:
-        return {"declared_dependencies": [], "requires_dist_raw": [], "raw_available": False, "requires_python": None}
+        declared = sorted({re.split(r"[\s\[;<>=!()]", r.strip())[0].lower() for r in pyproject_deps if r.strip()})
+        return {"declared_dependencies": declared, "requires_dist_raw": pyproject_deps, "raw_available": False, "requires_python": pyproject_python}
     msg = email.message_from_string(raw)
-    requires = msg.get_all("Requires-Dist") or []
+    requires = msg.get_all("Requires-Dist") or pyproject_deps
+    requires_python = msg.get("Requires-Python") or pyproject_python
     declared = sorted({re.split(r"[\s\[;<>=!()]", r.strip())[0].lower() for r in requires if r.strip()})
-    return {"name": msg.get("Name"), "version": msg.get("Version"), "declared_dependencies": declared, "requires_dist_raw": requires, "raw_available": True, "requires_python": msg.get("Requires-Python")}
+    return {"name": msg.get("Name"), "version": msg.get("Version"), "declared_dependencies": declared, "requires_dist_raw": requires, "raw_available": True, "requires_python": requires_python}
 
 
 def prefetch_declared_dependencies(requirements: list[str], dest: Path, limit: int = _MAX_DEPENDENCY_DOWNLOADS) -> None:
