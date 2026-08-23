@@ -82,8 +82,14 @@ async def create_analysis_from_upload(file: UploadFile = File(...), network: str
     if not name.endswith(_UPLOAD_SUFFIXES):
         raise HTTPException(400, f"unsupported file type — expected one of {_UPLOAD_SUFFIXES}")
     analysis_id = str(uuid.uuid4())
-    settings.samples_dir.mkdir(parents=True, exist_ok=True)
-    dest = settings.samples_dir / f"{analysis_id}_{name}"
+    # One subdirectory per analysis (not an analysis_id-prefixed filename) so collisions are avoided
+    # without mangling the original filename — package.py falls back to guessing the package/module name
+    # from that filename when the artifact's own METADATA/PKG-INFO can't be read, and a UUID prefix full of
+    # hyphen-digit sequences (which guess_package_name's "-\d" split treats as a version boundary) was
+    # winning that guess, producing an unimportable name like "1ba5414e".
+    dest_dir = settings.samples_dir / analysis_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / name
     size = 0
     with dest.open("wb") as f:
         while chunk := await file.read(1024 * 1024):

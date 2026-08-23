@@ -2,11 +2,12 @@ import json
 import shutil
 import socket
 import struct
+import zipfile
 from pathlib import Path
 import pytest
 from .collectors import EbpfCollector, FilesystemCollector, GvisorStraceCollector, PcapCollector
 from .analyzer import analyze
-from .package import guess_package_name, own_console_scripts, select_artifact
+from .package import guess_package_name, own_console_scripts, read_package_metadata, select_artifact
 from .schemas import NormalizedEvent
 from . import pcap_tls, registry, signals, sinkhole, static_scan
 
@@ -58,6 +59,19 @@ def test_guess_package_name_from_uploaded_filename():
     assert guess_package_name("malicious-sample-2.3.tar.gz") == "malicious-sample"
     assert guess_package_name("no-version-marker-here.zip") == "no-version-marker-here"
     assert guess_package_name("noext") == "noext"
+
+
+def test_read_package_metadata_finds_pkg_info_in_zip_sdist(tmp_path: Path):
+    """Regression: an sdist packaged as .zip (valid but uncommon — most use .tar.gz) has PKG-INFO, not
+    *.dist-info/METADATA. The zip branch only checked the latter, so real name/version silently fell back
+    to the empty stub for this shape — encountered on an actual uploaded sample."""
+    artifact = tmp_path / "weird-sdist-1.0.zip"
+    with zipfile.ZipFile(artifact, "w") as zf:
+        zf.writestr("weird-sdist-1.0/PKG-INFO", "Metadata-Version: 2.1\nName: weird-sdist\nVersion: 1.0\n")
+    metadata = read_package_metadata(artifact)
+    assert metadata["raw_available"] is True
+    assert metadata["name"] == "weird-sdist"
+    assert metadata["version"] == "1.0"
 
 
 def test_select_artifact():

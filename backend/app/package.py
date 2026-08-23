@@ -40,14 +40,22 @@ def read_package_metadata(artifact_path: Path) -> dict:
     try:
         if artifact_path.suffix in (".whl", ".zip"):
             with zipfile.ZipFile(artifact_path) as zf:
-                name = next((n for n in zf.namelist() if n.endswith(".dist-info/METADATA")), None)
+                names = zf.namelist()
+                # .whl always has *.dist-info/METADATA; an sdist packaged as .zip (uncommon but valid —
+                # most use .tar.gz) has PKG-INFO instead, same as the tarfile branch below.
+                name = next((n for n in names if n.endswith(".dist-info/METADATA")), None) or next((n for n in names if n.endswith("PKG-INFO")), None)
                 raw = zf.read(name).decode("utf-8", errors="replace") if name else None
         else:
             with tarfile.open(artifact_path) as tf:
                 name = next((n for n in tf.getnames() if n.endswith("PKG-INFO")), None)
                 member = tf.extractfile(name) if name else None
                 raw = member.read().decode("utf-8", errors="replace") if member else None
-    except (OSError, KeyError, tarfile.TarError, zipfile.BadZipFile):
+    except (OSError, KeyError, tarfile.TarError, zipfile.BadZipFile, RuntimeError):
+        # RuntimeError: zipfile raises this (not BadZipFile) for a password-protected/encrypted member —
+        # seen in the wild on an adversarial sample whose own PKG-INFO was zip-encrypted, presumably to
+        # break naive tooling that tries to read it. Degrading to the empty stub below is the right call
+        # either way; the encryption itself is exactly the kind of anomaly static-scan/reputation signals
+        # should be flagging, not something metadata-reading should crash the whole analysis over.
         pass
     if raw is None:
         return {"declared_dependencies": [], "requires_dist_raw": [], "raw_available": False}
