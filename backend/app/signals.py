@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any
 from .static_scan import shannon_entropy
 from .instrumentation import CODE_LOG_NAME, ENV_LOG_NAME
+from .sinkhole import scan_credential_patterns
 
 _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 _DOWNLOADERS = {"curl", "wget", "certutil"}
@@ -87,6 +88,28 @@ def _exec_exe(data: dict) -> str:
     return exe.rsplit("/", 1)[-1].lower()
 
 
+def _tree_depths(tree: dict[int, dict]) -> dict[int, int]:
+    """Recursive parent-chain depth with memoization and a cycle-guard (seen-set) — mirrors the npm
+    sibling's buildProcessTree. A pid whose ppid never itself shows up as a node here (parent never
+    exec'd anything we observed) is depth 0, same as a pid with no known parent at all."""
+    depth: dict[int, int] = {}
+
+    def resolve(pid: int, seen: set[int]) -> int:
+        if pid in depth:
+            return depth[pid]
+        ppid = tree.get(pid, {}).get("ppid")
+        if ppid is None or ppid not in tree or ppid in seen:
+            depth[pid] = 0
+            return 0
+        d = resolve(ppid, seen | {ppid}) + 1
+        depth[pid] = d
+        return d
+
+    for pid in tree:
+        resolve(pid, {pid})
+    return depth
+
+
 def build_process_signals(events: list[dict]) -> dict:
     commands = [e for e in events if e["type"] == "process.exec"]
     shell_spawns = [e for e in commands if _exec_exe(e["data"]) in _SHELLS]
@@ -100,6 +123,9 @@ def build_process_signals(events: list[dict]) -> dict:
     for e in events:
         if e["type"] == "process.fork" and e["data"].get("child_pid") in tree:
             tree[e["data"]["child_pid"]]["ppid"] = e.get("pid")
+    depths = _tree_depths(tree)
+    for pid, node in tree.items():
+        node["depth"] = depths[pid]
     return {
         "commands": [{"stage": e["stage"], "pid": e.get("pid"), "exe": _exec_exe(e["data"]), "argv": e["data"].get("argv") or e["data"].get("args")} for e in commands],
         "shell_spawns": [{"stage": e["stage"], "argv": e["data"].get("argv") or e["data"].get("args")} for e in shell_spawns],
@@ -168,9 +194,21 @@ def build_filesystem_signals(fs_diff: dict, events: list[dict], workspace_root: 
     }
 
 
-def build_network_signals(events: list[dict], pcap_flows: list[dict], dns_domains: list[str], sni_records: list[dict], sni_mismatch_records: list[dict], sinkhole_records: list[dict] | None = None) -> dict:
+def _credential_matches_for_capture(record: dict) -> list[dict]:
+    head = str(record.get("headers_preview", "")).encode("utf-8", errors="replace")
+    body = str(record.get("body_preview", "")).encode("utf-8", errors="replace")
+    return scan_credential_patterns(head, body)
+
+
+def build_network_signals(events: list[dict], pcap_flows: list[dict], dns_domains: list[str], sni_records: list[dict], sni_mismatch_records: list[dict], sinkhole_records: list[dict] | None = None, dns_answers: dict[str, list[str]] | None = None) -> dict:
     connections = [e for e in events if e["type"] == "network.connect"]
     domain_entropy = [{"domain": d, "entropy_bits_per_char": round(shannon_entropy(d.split(".")[0]), 2)} for d in dns_domains]
+    resolved_ips = {ip for ips in (dns_answers or {}).values() for ip in ips}
+    ip_hardcode_bypass_attempts = [
+        {"stage": e["stage"], "dst_ip": e["data"]["dst_ip"]}
+        for e in connections
+        if e["data"].get("dst_ip") and e["data"]["dst_ip"] not in resolved_ips
+    ]
     sinkhole_hosts = [r.get("host") for r in (sinkhole_records or []) if r.get("host")]
     exfil_matches = sorted(set(
         [d for d in dns_domains if any(known in d for known in _EXFIL_DOMAINS)]
@@ -189,13 +227,14 @@ def build_network_signals(events: list[dict], pcap_flows: list[dict], dns_domain
         "domain_entropy": domain_entropy,
         "exfil_channel_matches": exfil_matches,
         "http_body_credential_patterns": (
-            {"status": "success", "captures": sinkhole_records}
+            {"status": "success", "captures": [{**r, "credential_matches": _credential_matches_for_capture(r)} for r in sinkhole_records]}
             if sinkhole_records
             else {"status": "not_implemented", "reason": "sinkhole network mode not enabled for this analysis (network=sinkhole required); only DNS + SNI + flow metadata are observed on the wire"}
         ),
         "tls_sni_records": sni_records,
         "sni_ip_mismatch": sni_mismatch_records,
         "retry_failure_patterns": retry_patterns,
+        "ip_hardcode_bypass_attempts": ip_hardcode_bypass_attempts,
         "connection_events": len(connections),
     }
 
@@ -322,6 +361,7 @@ def build_summary(all_signals: dict) -> dict:
         "loaded_undeclared_modules": len(fs["declared_vs_loaded_modules"]["loaded_undeclared"]),
         "exfil_channel_matches": len(network["exfil_channel_matches"]),
         "sni_ip_mismatches": len(network["sni_ip_mismatch"]),
+        "ip_hardcode_bypass_attempts": len(network["ip_hardcode_bypass_attempts"]),
         "env_bulk_iterations": env["bulk_iteration_count"],
         "eval_exec_calls": len(code["eval_exec_calls"]),
         "ci_env_checks": len(evasion["ci_env_checks"]),
@@ -339,6 +379,8 @@ def build_summary(all_signals: dict) -> dict:
         notable.append("possible exfil channel domains: " + ", ".join(network["exfil_channel_matches"][:10]))
     if network["sni_ip_mismatch"]:
         notable.append(f"{len(network['sni_ip_mismatch'])} TLS SNI/resolved-IP mismatch(es)")
+    if network["ip_hardcode_bypass_attempts"]:
+        notable.append(f"{len(network['ip_hardcode_bypass_attempts'])} connection(s) to an IP never seen in a DNS answer (possible hardcoded C2 address)")
     typosquat = reputation.get("typosquat", {})
     if typosquat.get("candidate"):
         notable.append(f"name resembles popular package '{typosquat['candidate']}' (edit distance {typosquat['distance']})")
@@ -362,7 +404,7 @@ def build_all(sources: dict) -> dict:
     result: dict[str, Any] = {"events": events}
     result["process_signals"] = build_process_signals(events)
     result["filesystem_signals"] = build_filesystem_signals(sources["fs_diff"], events, sources["workspace_root"], declared)
-    result["network_signals"] = build_network_signals(events, sources["pcap_flows"], sources["dns_domains"], sources["sni_records"], sni_mismatch_records, sources.get("sinkhole_records"))
+    result["network_signals"] = build_network_signals(events, sources["pcap_flows"], sources["dns_domains"], sources["sni_records"], sni_mismatch_records, sources.get("sinkhole_records"), sources.get("dns_answers"))
     result["env_signals"] = build_env_signals(events)
     result["timing_signals"] = build_timing_signals(sources["resource_usage"], sources["stages"])
     result["evasion_signals"] = build_evasion_signals(events)

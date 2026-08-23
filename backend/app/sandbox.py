@@ -23,10 +23,11 @@ def check_runtime() -> tuple[bool, str, str]:
     return True, "ready", (trace if trace in runtime.stdout else settings.sandbox_runtime)
 
 
-def docker_command(workspace: Path, command: list[str], network: str, runtime: str = settings.sandbox_runtime, env: dict[str, str] | None = None, dns: str | None = None) -> list[str]:
-    # Restricted remains offline until an explicit allowlist proxy is configured. sinkhole needs real
-    # bridge networking too (its DNS/TCP redirect only works if traffic can actually leave the container).
-    network_arg = "none" if network in {"disabled", "restricted"} else "bridge"
+def docker_command(workspace: Path, command: list[str], network: str, runtime: str = settings.sandbox_runtime, env: dict[str, str] | None = None, dns: str | None = None, docker_network: str | None = None) -> list[str]:
+    # Restricted remains offline until an explicit allowlist proxy is configured. sinkhole needs its own
+    # per-analysis docker network (docker_network) instead of the default bridge, so its NAT rule can
+    # target that network's subnet specifically without catching other containers on the host.
+    network_arg = docker_network if docker_network else ("none" if network in {"disabled", "restricted"} else "bridge")
     user_args = ["--user", f"{os.getuid()}:{os.getgid()}"] if hasattr(os, "getuid") else []
     env_args = [arg for key, value in (env or {}).items() for arg in ("-e", f"{key}={value}")]
     dns_args = ["--dns", dns] if dns else []

@@ -65,6 +65,7 @@ _NANOSLEEP_SEC = re.compile(r"Sec:\s*(\d+)")
 _PRIVILEGE = ("setuid", "setgid", "setreuid", "setregid", "setresuid", "setresgid", "capset")
 _ESCAPE = ("ptrace", "mount", "umount2", "unshare", "setns", "pivot_root", "chroot", "init_module", "finit_module", "bpf", "keyctl", "add_key")
 _DNS_PORT = re.compile(r"Port:\s*53\b")
+_CONNECT_ADDR = re.compile(r"Addr:\s*([\d.]+)")
 # Real-time counterpart to the before/after fs-diff snapshot: a dropper that writes, chmod+x's, execs,
 # and deletes itself within one analysis never shows up in a before/after diff (absent from both sides of
 # it), so "outside package dir" / "autorun location write" need this syscall-level view too. Scoped to
@@ -120,7 +121,8 @@ class GvisorStraceCollector(Collector):
                     argv = argv_match.group(1) if argv_match else ""
                     events.append(NormalizedEvent(source=self.name, category="process", type="process.exec", stage=stage, pid=pid, data={"comm": comm, "exe": exe, "argv": argv, "args": args}))
                 elif syscall == "connect":
-                    events.append(NormalizedEvent(source=self.name, category="network", type="network.connect", stage=stage, pid=pid, data={"comm": comm, "args": args}))
+                    addr_match = _CONNECT_ADDR.search(args)
+                    events.append(NormalizedEvent(source=self.name, category="network", type="network.connect", stage=stage, pid=pid, data={"comm": comm, "args": args, "dst_ip": addr_match.group(1) if addr_match else None}))
                     if _DNS_PORT.search(args):
                         events.append(NormalizedEvent(source=self.name, category="dns", type="dns.query", stage=stage, pid=pid, data={"comm": comm, "args": args}))
                 elif syscall in ("sendto", "sendmsg") and _DNS_PORT.search(args):

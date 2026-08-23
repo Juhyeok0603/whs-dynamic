@@ -239,21 +239,62 @@ def test_build_dns_a_response_resolves_any_query_to_sinkhole_ip():
 
 
 def test_build_network_signals_http_body_patterns_reflect_sinkhole_state():
+    """Regression: credential-pattern scanning used to happen inside sinkhole.py at capture time (baked
+    into netsim.json itself); it now happens here at signal-extraction time, off the raw headers/body
+    previews — netsim.json stays a pure, unopinionated record (matches the raw-vs-derived split used
+    everywhere else in this pipeline, and the npm sibling's own netsim.json/extractor split)."""
     without_sinkhole = signals.build_network_signals([], [], [], [], [], sinkhole_records=None)
     assert without_sinkhole["http_body_credential_patterns"]["status"] == "not_implemented"
-    captures = [{"host": "evil.example.com", "credential_matches": [{"pattern": "aws_access_key_id", "preview": "AKIA..."}]}]
+    captures = [{"host": "evil.example.com", "headers_preview": "", "body_preview": '{"key": "AKIAABCDEFGHIJKLMNOP"}'}]
     with_sinkhole = signals.build_network_signals([], [], [], [], [], sinkhole_records=captures)
-    assert with_sinkhole["http_body_credential_patterns"] == {"status": "success", "captures": captures}
+    result_captures = with_sinkhole["http_body_credential_patterns"]["captures"]
+    assert len(result_captures) == 1
+    assert result_captures[0]["credential_matches"][0]["pattern"] == "aws_access_key_id"
+    assert result_captures[0]["host"] == "evil.example.com"  # original fields preserved alongside the new one
+
+
+def test_decode_body_preview_hex_fallback_for_non_utf8():
+    assert sinkhole._decode_body_preview(b"hello world") == "hello world"
+    assert sinkhole._decode_body_preview(bytes([0xFF, 0xFE])) == "fffe"  # lossless, unlike errors="replace"
+
+
+def test_safe_host_rejects_injection_characters():
+    """Regression: the raw SNI (fully attacker-controlled) used to go straight into an openssl -subj
+    argument and an extfile's content — a newline or '/' in it could inject extra DN fields or extension
+    directives. Anything outside a plain DNS-label charset must be replaced before touching openssl."""
+    assert sinkhole._safe_host("evil.example.com") == "evil.example.com"
+    assert sinkhole._safe_host("evil.com\nbasicConstraints=critical,CA:TRUE") == "invalid-sni.invalid"
+    assert sinkhole._safe_host("evil.com/O=Fake") == "invalid-sni.invalid"
+    assert sinkhole._safe_host(None) == "invalid-sni.invalid"
+    assert sinkhole._safe_host("") == "invalid-sni.invalid"
+
+
+def test_build_dns_a_response_returns_nodata_for_non_a_queries():
+    """Regression: qtype was never checked, so an AAAA query got an A-record answer stuffed into a
+    mismatched response — some stub resolvers treat that as a hard failure for the whole lookup."""
+    aaaa_query = bytes.fromhex("bbbb01000001000000000000") + b"\x07example\x03com\x00" + bytes.fromhex("001c0001")  # qtype=28 (AAAA)
+    response = sinkhole.build_dns_a_response(aaaa_query, "172.17.0.1")
+    assert response is not None
+    header = response[:12]
+    ancount = struct.unpack(">H", header[6:8])[0]
+    assert ancount == 0
+    assert not response.endswith(socket.inet_aton("172.17.0.1"))
 
 
 @pytest.mark.skipif(shutil.which("openssl") is None, reason="requires the openssl CLI")
 def test_sinkhole_issues_leaf_cert_signed_by_its_own_ca(tmp_path: Path):
-    sh = sinkhole.Sinkhole(tmp_path)
+    sh = sinkhole.Sinkhole(tmp_path, "test-analysis-id")
     assert sh._generate_ca() is True
     assert sh.ca_pem.exists() and sh.ca_pem.stat().st_size > 0
     ctx = sh._leaf_context("evil.example.com")
     assert isinstance(ctx, __import__("ssl").SSLContext)
     assert (tmp_path / "_leaf-evil.example.com.pem").exists()
+
+
+def test_sinkhole_derives_docker_network_and_nat_chain_names_from_analysis_id():
+    sh = sinkhole.Sinkhole(Path("/tmp/whatever"), "AbCdEf12-3456-7890")
+    assert sh.docker_network == "dast-sh-abcdef12"
+    assert sh._nat_chain == "DAST_SH_ABCDEF12"
 
 
 def test_gvisor_strace_flags_write_outside_site_but_not_own_infra(tmp_path: Path):
@@ -299,9 +340,45 @@ def test_sinkhole_records_feed_env_bulk_access_correlation():
 
 def test_sinkhole_degrades_honestly_without_openssl(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(sinkhole.shutil, "which", lambda _: None)
-    sh = sinkhole.Sinkhole(tmp_path)
+    sh = sinkhole.Sinkhole(tmp_path, "test-analysis-id")
     sh.start()
     assert sh.active is False
     assert "openssl not installed" in sh.status
     assert sh.to_netsim_json() == {"status": "unavailable", "reason": sh.status}
     sh.stop()  # must be a no-op, not raise, when start() never actually came up
+
+
+def test_process_tree_depth_follows_parent_chain():
+    """Regression: process_tree had no depth field at all — pid/exe/ppid only. A grandchild process
+    (dropper -> shell -> payload) should come out at depth 2, not just flat pid/ppid pairs."""
+    events = [
+        {"timestamp": "t0", "source": "gvisor", "category": "process", "type": "process.exec", "stage": "install", "pid": 1, "data": {"exe": "python"}},
+        {"timestamp": "t1", "source": "gvisor", "category": "process", "type": "process.fork", "stage": "install", "pid": 1, "data": {"child_pid": 2}},
+        {"timestamp": "t2", "source": "gvisor", "category": "process", "type": "process.exec", "stage": "install", "pid": 2, "data": {"exe": "sh"}},
+        {"timestamp": "t3", "source": "gvisor", "category": "process", "type": "process.fork", "stage": "install", "pid": 2, "data": {"child_pid": 3}},
+        {"timestamp": "t4", "source": "gvisor", "category": "process", "type": "process.exec", "stage": "install", "pid": 3, "data": {"exe": "payload"}},
+    ]
+    tree = {n["pid"]: n for n in signals.build_process_signals(events)["process_tree"]}
+    assert tree[1]["depth"] == 0
+    assert tree[2]["depth"] == 1
+    assert tree[3]["depth"] == 2
+
+
+def test_docker_command_network_override_ignores_none_bridge_mapping():
+    """sinkhole needs its own per-analysis docker network, not the default 'bridge' this function would
+    otherwise pick for any non-disabled/restricted mode."""
+    from . import sandbox
+    cmd = sandbox.docker_command(Path("/tmp/x"), ["echo", "hi"], "sinkhole", docker_network="dast-sh-abcdef12")
+    assert cmd[cmd.index("--network") + 1] == "dast-sh-abcdef12"
+
+
+def test_ip_hardcode_bypass_attempts_flags_ip_never_seen_in_dns_answer():
+    """Regression: gvisor already parses connect()'s raw destination IP, but nothing compared it against
+    DNS answers — a package that hardcodes an exfil IP and skips DNS entirely went undetected."""
+    events = [
+        {"timestamp": "t0", "source": "gvisor", "category": "network", "type": "network.connect", "stage": "install", "pid": 1, "data": {"dst_ip": "172.17.0.1"}},  # matches a DNS answer
+        {"timestamp": "t1", "source": "gvisor", "category": "network", "type": "network.connect", "stage": "install", "pid": 1, "data": {"dst_ip": "203.0.113.9"}},  # never resolved
+    ]
+    dns_answers = {"evil.example.com": ["172.17.0.1"]}
+    result = signals.build_network_signals(events, [], [], [], [], dns_answers=dns_answers)
+    assert result["ip_hardcode_bypass_attempts"] == [{"stage": "install", "dst_ip": "203.0.113.9"}]

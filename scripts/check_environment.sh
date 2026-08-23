@@ -8,6 +8,7 @@ if python3 -m pip --version >/dev/null 2>&1; then echo "[OK] pip3"; else echo "[
 check tcpdump
 check tshark
 check openssl
+check iptables
 check clang
 check llvm
 check bpftool
