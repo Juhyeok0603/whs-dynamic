@@ -172,6 +172,12 @@ async function searchPackage(){
     <div class="summary">${esc(data.summary||'설명 없음')} — 총 ${data.versions.length}개 버전</div>
     <div class="toolbar">
       <select id="versionSelect">${data.versions.map(v=>`<option value="${esc(v)}">${esc(v)}${v===data.latest_version?' (최신)':''}</option>`).join('')}</select>
+      <select id="networkSelect" title="네트워크 모드">
+        <option value="restricted" selected>restricted (네트워크 차단, 기본)</option>
+        <option value="disabled">disabled (네트워크 차단)</option>
+        <option value="full">full (실제 인터넷, 관찰만)</option>
+        <option value="sinkhole">sinkhole (TLS 가로채기, 실제 목적지엔 도달 안 함)</option>
+      </select>
       <button onclick="analyzeSelected('${esc(data.name)}')">이 버전으로 분석 시작</button>
       <button class="secondary" onclick="document.querySelector('#searchResult').innerHTML=''">취소</button>
     </div>
@@ -180,7 +186,8 @@ async function searchPackage(){
 
 async function analyzeSelected(pkg){
   const version=document.querySelector('#versionSelect').value;
-  await fetch(api+'/api/analysis',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package:pkg,version})});
+  const network=document.querySelector('#networkSelect').value;
+  await fetch(api+'/api/analysis',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package:pkg,version,network})});
   document.querySelector('#searchResult').innerHTML=`<div class="empty">${esc(pkg)}==${esc(version)} 분석을 큐에 등록했습니다. 아래 목록에서 진행 상황을 확인하세요.</div>`;
   document.querySelector('#searchTerm').value='';
   loadReports();

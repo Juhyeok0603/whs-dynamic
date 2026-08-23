@@ -19,12 +19,32 @@ def load_report(root: Path, analysis_id: str) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def write_log_bundle(root: Path, report: Any, pcap_src: Path | None) -> Path:
+def write_log_bundle(root: Path, report: Any, pcap_src: Path | None, raw_files: dict[str, str] | None = None) -> Path:
     """Writes the logs/<run-id>/ file bundle — package.log, fs-diff.log, exit-code.txt, dns.log,
-    netsim.json, network.pcap, gvisor-trace.json, resource.json — as a per-file artifact export
-    alongside report.json, matching the sibling npm module's output convention."""
+    netsim.json, network.pcap, gvisor-trace.json, resource.json, plus the signal-extraction pipeline's
+    raw inputs (env-access.log, code-exec.log, package-metadata.json, registry-meta.json, static-scan.json,
+    domain-intel.json — passed in as raw_files) and normalized outputs (*_signals.json, events.jsonl,
+    summary.json, from report.signals) — as a per-file artifact export alongside report.json, matching the
+    sibling npm module's output convention."""
     target = root / report.analysis_id / "logs"
     target.mkdir(parents=True, exist_ok=True)
+
+    raw_files = dict(raw_files or {})
+    # Default stub, honest about the absence of interception — overridden by package.py with real
+    # sinkhole capture data when network=sinkhole was actually used for this analysis.
+    raw_files.setdefault("netsim.json", json.dumps({
+        "status": "not_implemented",
+        "note": "outbound sinkhole / TLS interception is not built for this run; see network.pcap and dns.log for what was actually observed on the wire instead",
+    }, indent=2))
+    for name, content in raw_files.items():
+        (target / name).write_text(content, encoding="utf-8")
+
+    signals = getattr(report, "signals", None) or {}
+    for key, value in signals.items():
+        if key == "events":
+            (target / "events.jsonl").write_text("\n".join(json.dumps(row, default=str) for row in value), encoding="utf-8")
+        else:
+            (target / f"{key}.json").write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
 
     package_log = "\n\n".join(f"=== {s.name} (exit {s.exit_code}) ===\n--- stdout ---\n{s.stdout}\n--- stderr ---\n{s.stderr}" for s in report.stages)
     (target / "package.log").write_text(package_log, encoding="utf-8")
@@ -38,12 +58,6 @@ def write_log_bundle(root: Path, report: Any, pcap_src: Path | None) -> Path:
 
     behavior = report.behavior or {}
     (target / "dns.log").write_text("\n".join(behavior.get("dns_domains", [])), encoding="utf-8")
-
-    # No outbound sinkhole / TLS interception exists yet — written honestly rather than faking captured traffic.
-    (target / "netsim.json").write_text(json.dumps({
-        "status": "not_implemented",
-        "note": "outbound sinkhole / TLS interception is not built; see network.pcap and dns.log for what was actually observed on the wire instead",
-    }, indent=2), encoding="utf-8")
 
     if pcap_src and pcap_src.exists() and pcap_src.stat().st_size > 0:
         (target / "network.pcap").write_bytes(pcap_src.read_bytes())

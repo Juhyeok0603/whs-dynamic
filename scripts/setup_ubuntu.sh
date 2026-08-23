@@ -10,7 +10,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates curl gnupg lsb-release docker.io \
   python3 python3.12-venv python3-pip python3-dev \
-  tcpdump libpcap-dev iproute2 nftables clang llvm bpftrace \
+  tcpdump libpcap-dev iproute2 nftables clang llvm bpftrace openssl \
   linux-headers-$(uname -r) jq git
 
 tool_packages=(linux-tools-common)
@@ -52,6 +52,10 @@ systemctl restart docker
 
 # pcap: let the non-root pipeline start tcpdump
 setcap cap_net_raw,cap_net_admin+ep "$(command -v tcpdump)"
+
+# sinkhole (network=sinkhole): let the non-root pipeline bind DNS/HTTP/HTTPS on 53/80/443. python3 in a
+# venv is normally a symlink to this same interpreter, so the venv inherits the capability too.
+setcap cap_net_bind_service+ep "$(readlink -f "$(command -v python3)")"
 
 # eBPF: let the non-root pipeline start/stop bpftrace without a password prompt
 analysis_user="${SUDO_USER:-$USER}"

@@ -14,7 +14,7 @@ from backend.app.storage import load_report
 
 
 def doctor():
-    checks = [("Docker", shutil.which("docker")), ("runsc", shutil.which("runsc")), ("Python", sys.executable), ("pip", shutil.which("pip")), ("cgroup v2", Path("/sys/fs/cgroup/cgroup.controllers").exists()), ("tcpdump", shutil.which("tcpdump")), ("bpftool", shutil.which("bpftool"))]
+    checks = [("Docker", shutil.which("docker")), ("runsc", shutil.which("runsc")), ("Python", sys.executable), ("pip", shutil.which("pip")), ("cgroup v2", Path("/sys/fs/cgroup/cgroup.controllers").exists()), ("tcpdump", shutil.which("tcpdump")), ("bpftool", shutil.which("bpftool")), ("openssl (network=sinkhole)", shutil.which("openssl"))]
     for name, value in checks: print(f"[{ 'OK' if value else 'WARN' }] {name}")
     if shutil.which("docker"):
         result = subprocess.run(["docker", "info"], capture_output=True, text=True)
@@ -24,7 +24,7 @@ def doctor():
 
 def main():
     parser = argparse.ArgumentParser(prog="dast"); sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("doctor"); a = sub.add_parser("analyze"); a.add_argument("package"); a.add_argument("--artifact", choices=["auto","wheel","sdist"], default="auto"); a.add_argument("--network", choices=["disabled","restricted","full"], default="restricted"); a.add_argument("--timeout", type=int, default=240)
+    sub.add_parser("doctor"); a = sub.add_parser("analyze"); a.add_argument("package"); a.add_argument("--artifact", choices=["auto","wheel","sdist"], default="auto"); a.add_argument("--network", choices=["disabled","restricted","full","sinkhole"], default="restricted"); a.add_argument("--timeout", type=int, default=240)
     r = sub.add_parser("report"); r.add_argument("analysis_id"); sub.add_parser("server"); args = parser.parse_args()
     if args.command == "doctor": doctor()
     elif args.command == "analyze":

@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Any
 from .schemas import NormalizedEvent
+from .signals import _AUTORUN_PATTERNS
 
 
 class Collector:
@@ -49,14 +50,28 @@ class RuntimeCollector(Collector):
 
 # runsc --strace entry line: "... strace.go:NNN] [ pid: tid] comm E syscall(args"
 _STRACE_LINE = re.compile(r"strace\.go:\d+\]\s+\[\s*(\d+):\s*\d+\]\s+(\S+)\s+E\s+(\w+)\((.*)")
+# exit line: "... strace.go:NNN] [ pid: tid] comm X syscall(args) = retval" — only used for clone/fork below,
+# to recover a best-effort parent->child pid edge (the retval on the parent's line is the new child's pid).
+_STRACE_EXIT_LINE = re.compile(r"strace\.go:\d+\]\s+\[\s*(\d+):\s*\d+\]\s+(\S+)\s+X\s+(\w+)\(.*?\)\s*=\s*(-?\d+)")
 # execve(pathname, argv[...], envp[...]) — pull out just the exec target and argv, since envp (e.g. the
 # official Python image's PYTHON_SHA256=... env var) would otherwise pollute any substring match on the raw args.
 _EXECVE_PATH = re.compile(r"(/[^\s,]+)")
 _EXECVE_ARGV = re.compile(r"\[(.*?)\]")
 _SENSITIVE = (".aws", ".ssh", ".netrc", "/etc/passwd", "/etc/shadow")
+_EVASION_PATHS = ("/proc/cpuinfo", "/sys/class/dmi/id/product_name", "/proc/scsi/scsi", "/sys/hypervisor", "/proc/xen")
+_WRITE_FLAGS = re.compile(r"O_WRONLY|O_RDWR|O_CREAT")
+_CHMOD_MODE = re.compile(r"0x([0-9a-fA-F]+)\)\s*$")
+_NANOSLEEP_SEC = re.compile(r"Sec:\s*(\d+)")
 _PRIVILEGE = ("setuid", "setgid", "setreuid", "setregid", "setresuid", "setresgid", "capset")
 _ESCAPE = ("ptrace", "mount", "umount2", "unshare", "setns", "pivot_root", "chroot", "init_module", "finit_module", "bpf", "keyctl", "add_key")
 _DNS_PORT = re.compile(r"Port:\s*53\b")
+# Real-time counterpart to the before/after fs-diff snapshot: a dropper that writes, chmod+x's, execs,
+# and deletes itself within one analysis never shows up in a before/after diff (absent from both sides of
+# it), so "outside package dir" / "autorun location write" need this syscall-level view too. Scoped to
+# our own site/build install targets and instrumentation's own log files to avoid flagging routine
+# install/import noise — everything else genuinely is "written outside the package".
+_OWN_WRITE_PREFIXES = ("/workspace/site", "/workspace/built")
+_OWN_WRITE_FILES = ("/workspace/_env-access.log", "/workspace/_code-exec.log")
 
 
 class GvisorStraceCollector(Collector):
@@ -90,6 +105,11 @@ class GvisorStraceCollector(Collector):
             for line in text.splitlines():
                 match = _STRACE_LINE.search(line)
                 if not match:
+                    exit_match = _STRACE_EXIT_LINE.search(line)
+                    if exit_match and exit_match.group(3) in ("clone", "clone3", "fork", "vfork"):
+                        child_pid = int(exit_match.group(4))
+                        if child_pid > 0:
+                            events.append(NormalizedEvent(source=self.name, category="process", type="process.fork", stage=stage, pid=int(exit_match.group(1)), data={"comm": exit_match.group(2), "child_pid": child_pid}))
                     continue
                 pid, comm, syscall, args = int(match.group(1)), match.group(2), match.group(3), match.group(4)[:512]
                 self.syscall_counts[syscall] += 1
@@ -109,9 +129,28 @@ class GvisorStraceCollector(Collector):
                     events.append(NormalizedEvent(source=self.name, category="privilege", type="privilege.change", stage=stage, pid=pid, data={"comm": comm, "syscall": syscall, "args": args}))
                 elif syscall in _ESCAPE:
                     events.append(NormalizedEvent(source=self.name, category="privilege", type="sandbox.escape_syscall", stage=stage, pid=pid, data={"comm": comm, "syscall": syscall, "args": args}))
-                # ponytail: opens are only kept for sensitive paths; full file telemetry would drown the report
+                elif syscall in ("chmod", "fchmod", "fchmodat"):
+                    path_match = _EXECVE_PATH.search(args)
+                    mode_match = _CHMOD_MODE.search(args)
+                    events.append(NormalizedEvent(source=self.name, category="file", type="file.chmod", stage=stage, pid=pid, data={"comm": comm, "path": path_match.group(1) if path_match else None, "mode": oct(int(mode_match.group(1), 16)) if mode_match else None}))
+                # ponytail: opens are only kept for sensitive/evasion paths; full file telemetry would drown the report
                 elif syscall in ("open", "openat") and any(s in args for s in _SENSITIVE):
-                    events.append(NormalizedEvent(source=self.name, category="file", type="file.read", stage=stage, pid=pid, data={"comm": comm, "path": args}))
+                    events.append(NormalizedEvent(source=self.name, category="file", type="file.write" if _WRITE_FLAGS.search(args) else "file.read", stage=stage, pid=pid, data={"comm": comm, "path": args}))
+                elif syscall in ("open", "openat") and any(s in args for s in _EVASION_PATHS):
+                    events.append(NormalizedEvent(source=self.name, category="evasion", type="evasion.probe", stage=stage, pid=pid, data={"comm": comm, "path": args}))
+                elif (
+                    syscall in ("open", "openat") and _WRITE_FLAGS.search(args) and "/workspace" in args
+                    and not any(p in args for p in _OWN_WRITE_PREFIXES) and not any(f in args for f in _OWN_WRITE_FILES)
+                ):
+                    path_match = _EXECVE_PATH.search(args)
+                    path = path_match.group(1) if path_match else args
+                    kind = "autorun" if any(p in path for p in _AUTORUN_PATTERNS) else "outside_site"
+                    events.append(NormalizedEvent(source=self.name, category="file", type="file.write_outside_site", stage=stage, pid=pid, data={"comm": comm, "path": path, "kind": kind}))
+                elif syscall in ("nanosleep", "clock_nanosleep"):
+                    sec_match = _NANOSLEEP_SEC.search(args)
+                    seconds = int(sec_match.group(1)) if sec_match else 0
+                    if seconds >= 2:  # short sleeps are routine; only long ones are evasion-relevant
+                        events.append(NormalizedEvent(source=self.name, category="process", type="process.sleep", stage=stage, pid=pid, data={"comm": comm, "duration_s": seconds}))
                 if len(events) >= limit:
                     break
             if len(events) >= limit:

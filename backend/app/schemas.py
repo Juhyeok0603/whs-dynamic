@@ -11,7 +11,7 @@ class AnalysisRequest(BaseModel):
     package: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:==[A-Za-z0-9.*+!._-]+)?$")
     version: str | None = None
     artifact: Literal["auto", "wheel", "sdist"] = "auto"
-    network: Literal["disabled", "restricted", "full"] = "restricted"
+    network: Literal["disabled", "restricted", "full", "sinkhole"] = "restricted"
     timeout: int = Field(default=240, ge=5, le=3600)
     custom_command: list[str] | None = None
 
@@ -65,3 +65,4 @@ class AnalysisReport(BaseModel):
     behavior_chains: list[dict[str, Any]]
     collector_status: dict[str, str]
     errors: list[str]
+    signals: dict[str, Any] = Field(default_factory=dict)

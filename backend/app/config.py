@@ -12,6 +12,9 @@ class Settings:
     total_timeout: int = int(os.getenv("TOTAL_TIMEOUT", "240"))
     max_output_bytes: int = int(os.getenv("MAX_OUTPUT_BYTES", "65536"))
     max_import_targets: int = int(os.getenv("MAX_IMPORT_TARGETS", "10"))
+    vt_api_key: str | None = os.getenv("VT_API_KEY") or None
+    top_packages_cache_ttl_hours: int = int(os.getenv("TOP_PACKAGES_CACHE_TTL_HOURS", "168"))
+    whois_timeout: int = int(os.getenv("WHOIS_TIMEOUT", "5"))
 
     def validate(self) -> None:
         if self.network_mode not in {"disabled", "restricted", "full"}:

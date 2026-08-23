@@ -15,7 +15,14 @@ from .storage import load_report
 app = FastAPI(title="PyPI DAST MVP", version="0.1.0")
 executor = ThreadPoolExecutor(max_workers=2)
 jobs: dict[str, dict] = {}  # analysis_id -> in-flight job state, until report.json exists on disk
-LOG_FILES = ("package.log", "fs-diff.log", "exit-code.txt", "dns.log", "netsim.json", "network.pcap", "gvisor-trace.json", "resource.json")
+LOG_FILES = (
+    "package.log", "fs-diff.log", "exit-code.txt", "dns.log", "netsim.json", "network.pcap", "gvisor-trace.json", "resource.json",
+    # signal-extraction pipeline: raw inputs (produced by package.analyze_package, passed through storage.write_log_bundle)
+    "package-metadata.json", "registry-meta.json", "static-scan.json", "domain-intel.json", "env-access.log", "code-exec.log",
+    # signal-extraction pipeline: normalized outputs (from report.signals, one file per signals.py builder)
+    "process_signals.json", "filesystem_signals.json", "network_signals.json", "env_signals.json", "timing_signals.json",
+    "evasion_signals.json", "code_signals.json", "reputation_context.json", "correlations.json", "events.jsonl", "summary.json",
+)
 
 
 @app.get("/health")

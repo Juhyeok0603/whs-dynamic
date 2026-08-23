@@ -7,6 +7,7 @@ check python3
 if python3 -m pip --version >/dev/null 2>&1; then echo "[OK] pip3"; else echo "[WARN] pip3 unavailable"; fi
 check tcpdump
 check tshark
+check openssl
 check clang
 check llvm
 check bpftool
