@@ -2,6 +2,7 @@ import configparser
 import email
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -63,6 +64,18 @@ def select_artifact(files: list[Path], package: str, artifact: str) -> Path | No
     return next((p for p in candidates if artifact == "auto" or (artifact == "wheel" and p.suffix == ".whl") or (artifact == "sdist" and p.suffix in (".gz", ".zip"))), candidates[0] if candidates else None)
 
 
+def guess_package_name(filename: str) -> str:
+    """Best-effort name extraction from an artifact filename ('evil_pkg-1.0.0-py3-none-any.whl' ->
+    'evil_pkg') for uploaded artifacts with no usable METADATA/PKG-INFO name — mirrors the name-version
+    split select_artifact() already assumes for real PyPI-style filenames."""
+    stem = filename
+    for suffix in (".tar.gz", ".tgz", ".whl", ".zip"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    return re.split(r"-\d", stem, maxsplit=1)[0] or stem
+
+
 def own_console_scripts(site_dir: Path, package: str) -> list[str]:
     """Reads this package's own [console_scripts] entry points (not its dependencies') so import-only analysis can be extended a step further."""
     norm = lambda s: s.lower().replace("-", "_").replace(".", "_")
@@ -95,9 +108,8 @@ def run_stage(name, command, cwd, timeout, sandboxed=False, network="restricted"
     return StageResult(name=name, status=status, started_at=started_at, finished_at=now(), duration_seconds=round(time.monotonic() - started, 3), exit_code=code, stdout=stdout, stderr=stderr, timeout=timed_out)
 
 
-def analyze_package(package: str, version: str | None = None, artifact="auto", network="restricted", timeout=240, custom_command=None, analysis_id: str | None = None, on_stage=None) -> AnalysisReport:
+def analyze_package(package: str | None = None, version: str | None = None, artifact="auto", network="restricted", timeout=240, custom_command=None, analysis_id: str | None = None, on_stage=None, local_artifact: Path | None = None) -> AnalysisReport:
     analysis_id = analysis_id or str(uuid.uuid4()); started = now(); events = []; stages = []; errors = []
-    requested = package if version is None else f"{package}=={version}"
     def track(stage_result):
         stages.append(stage_result)
         if on_stage: on_stage(stage_result.name, stage_result.status)
@@ -110,11 +122,22 @@ def analyze_package(package: str, version: str | None = None, artifact="auto", n
         raw_files: dict[str, str] = {}
         report_signals: dict = {}
         try:
-            track(run_stage("resolve", [sys.executable, "-c", f"print('resolved by pip download: {requested}')"], workspace, 5))
-            # Dependencies are downloaded on the host so the sandbox can install offline with --network none.
-            download = run_stage("download", [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", "--retries", "1", "--timeout", "15", "--dest", str(workspace), requested], workspace, 120); track(download)
-            selected = select_artifact(list(workspace.iterdir()), package, artifact)
-            if selected is None: raise RuntimeError(download.stderr or "No artifact downloaded")
+            if local_artifact:
+                # No PyPI round-trip at all — the artifact came from an upload (e.g. a real malicious
+                # sample that was never going to be on PyPI in the first place). resolve/download stay in
+                # the stage list (as instant no-ops) purely so the dashboard's generic stage-card
+                # rendering and progress math don't need special-casing for this path.
+                track(StageResult(name="resolve", status="completed", started_at=now(), finished_at=now(), duration_seconds=0, exit_code=0, stdout=f"using uploaded artifact: {local_artifact.name}", stderr="", timeout=False))
+                selected = workspace / local_artifact.name
+                shutil.copy(local_artifact, selected)
+                track(StageResult(name="download", status="completed", started_at=now(), finished_at=now(), duration_seconds=0, exit_code=0, stdout="(skipped — using uploaded artifact, not fetched from PyPI)", stderr="", timeout=False))
+            else:
+                requested = package if version is None else f"{package}=={version}"
+                track(run_stage("resolve", [sys.executable, "-c", f"print('resolved by pip download: {requested}')"], workspace, 5))
+                # Dependencies are downloaded on the host so the sandbox can install offline with --network none.
+                download = run_stage("download", [sys.executable, "-m", "pip", "download", "--disable-pip-version-check", "--retries", "1", "--timeout", "15", "--dest", str(workspace), requested], workspace, 120); track(download)
+                selected = select_artifact(list(workspace.iterdir()), package, artifact)
+                if selected is None: raise RuntimeError(download.stderr or "No artifact downloaded")
             distribution_type = "wheel" if selected.suffix == ".whl" else "sdist"
             lister = "zipfile" if selected.suffix in (".whl", ".zip") else "tarfile"
             track(run_stage("inspect", [sys.executable, "-m", lister, "-l", str(selected)], workspace, 20))
@@ -122,6 +145,8 @@ def analyze_package(package: str, version: str | None = None, artifact="auto", n
             # Host-side signal extraction: independent of sandbox network mode, runs whether or not the
             # sandboxed stages below succeed, so it happens right after the artifact is on disk.
             metadata = read_package_metadata(selected)
+            package = package or metadata.get("name") or guess_package_name(selected.name)
+            version = version or metadata.get("version")
             registry_meta = _safe_call(registry.fetch_registry_meta, package, version)
             download_stats = _safe_call(registry.fetch_download_stats, package)
             typosquat = _safe_call(registry.typosquat_check, package, settings.data_dir / "_cache", settings.top_packages_cache_ttl_hours)

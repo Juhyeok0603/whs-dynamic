@@ -1,0 +1,8 @@
+# 분석 결과와 업로드된 샘플에는 실제 악성코드/실행 로그가 그대로 담길 수 있어 git에 올리지 않는다.
+/data/
+/samples/
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

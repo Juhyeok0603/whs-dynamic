@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from .collectors import EbpfCollector, FilesystemCollector, GvisorStraceCollector, PcapCollector
 from .analyzer import analyze
-from .package import own_console_scripts, select_artifact
+from .package import guess_package_name, own_console_scripts, select_artifact
 from .schemas import NormalizedEvent
 from . import pcap_tls, registry, signals, sinkhole, static_scan
 
@@ -48,6 +48,16 @@ def test_pcap_and_ebpf_line_parsers():
     assert EbpfCollector.parse_line("EXEC pid=123 comm=curl file=/usr/bin/curl") == {"type": "process.exec", "pid": 123, "comm": "curl", "file": "/usr/bin/curl"}
     assert EbpfCollector.parse_line("CONN pid=9 comm=python3") == {"type": "network.connect", "pid": 9, "comm": "python3"}
     assert EbpfCollector.parse_line("EXEC pid=1 comm=dockerd file=/usr/bin/dockerd") is None  # infra noise filtered
+
+
+def test_guess_package_name_from_uploaded_filename():
+    """Fallback naming for uploaded artifacts with no usable METADATA/PKG-INFO (a real malicious sample
+    often won't have proper packaging metadata) — derived the same way select_artifact already assumes
+    PyPI-style filenames are shaped."""
+    assert guess_package_name("evil_pkg-1.0.0-py3-none-any.whl") == "evil_pkg"
+    assert guess_package_name("malicious-sample-2.3.tar.gz") == "malicious-sample"
+    assert guess_package_name("no-version-marker-here.zip") == "no-version-marker-here"
+    assert guess_package_name("noext") == "noext"
 
 
 def test_select_artifact():

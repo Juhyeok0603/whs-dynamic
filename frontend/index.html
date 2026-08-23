@@ -86,6 +86,11 @@
 <section class="toolbar"><input id="searchTerm" placeholder="검색할 패키지 이름 (예: requests)" onkeydown="if(event.key==='Enter')searchPackage()"><button onclick="searchPackage()">검색하기</button></section>
 <section id="searchResult"></section>
 
+<div class="sechead">로컬 파일로 분석 (PyPI에 없는 실제 샘플용)</div>
+<section class="toolbar"><input id="uploadFile" type="file" accept=".whl,.tar.gz,.tgz,.zip"><button onclick="uploadAndAnalyze()">업로드해서 분석 시작</button></section>
+<div class="empty small" style="padding:10px;text-align:left">.whl/.tar.gz/.tgz/.zip 아티팩트를 그대로 업로드해 같은 파이프라인(설치→import→시그널 추출)으로 분석합니다 — 실제 파일이 샌드박스 안에서 실행됩니다.</div>
+<section id="uploadResult"></section>
+
 <div class="sechead">분석 결과 목록</div>
 <section class="toolbar"><input id="search" placeholder="결과 목록에서 패키지 이름으로 검색" oninput="applyFilter()"><button class="secondary" onclick="loadReports()">새로고침</button></section>
 <div id="count" class="count"></div>
@@ -190,6 +195,24 @@ async function analyzeSelected(pkg){
   document.querySelector('#searchResult').innerHTML=`<div class="empty">${esc(pkg)}==${esc(version)} 분석을 큐에 등록했습니다. 아래 목록에서 진행 상황을 확인하세요.</div>`;
   document.querySelector('#searchTerm').value='';
   loadReports();
+}
+
+async function uploadAndAnalyze(){
+  const input=document.querySelector('#uploadFile');
+  const box=document.querySelector('#uploadResult');
+  if(!input.files.length){box.innerHTML='<div class="empty small">먼저 파일을 선택하세요.</div>';return;}
+  const form=new FormData();
+  form.append('file', input.files[0]);
+  box.innerHTML='<div class="empty small">업로드 중...</div>';
+  try{
+    const r=await fetch(api+'/api/analysis/upload',{method:'POST',body:form});
+    if(!r.ok){const detail=(await r.json().catch(()=>({}))).detail;box.innerHTML=`<div class="empty small">업로드 실패: ${esc(detail||r.status)}</div>`;return;}
+    box.innerHTML=`<div class="empty small">${esc(input.files[0].name)} 분석을 큐에 등록했습니다. 아래 목록에서 진행 상황을 확인하세요.</div>`;
+    input.value='';
+    loadReports();
+  }catch(e){
+    box.innerHTML='<div class="empty small">업로드 중 오류가 발생했습니다.</div>';
+  }
 }
 
 function stageCard(s){

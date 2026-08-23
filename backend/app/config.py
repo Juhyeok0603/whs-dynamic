@@ -6,6 +6,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path = Path(os.getenv("DATA_DIR", "data/analyses"))
+    samples_dir: Path = Path(os.getenv("SAMPLES_DIR", "samples"))
     network_mode: str = os.getenv("NETWORK_MODE", "restricted")
     sandbox_runtime: str = os.getenv("SANDBOX_RUNTIME", "runsc")
     gvisor_log_dir: Path = Path(os.getenv("GVISOR_LOG_DIR", "/var/log/runsc"))

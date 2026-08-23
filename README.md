@@ -36,7 +36,11 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 sudo rm -rf /tmp/pypi-dast-*
 ```
 
-API: `POST /api/analysis`, `GET /api/analysis`, `GET /api/analysis/{id}`, `/events`, `/findings`. 대시보드는 서버가 `frontend/index.html`을 `/`에서 직접 서빙하므로 `uvicorn` 실행 후 `http://localhost:8000`을 그대로 열면 됩니다.
+API: `POST /api/analysis`(PyPI 이름으로), `POST /api/analysis/upload`(로컬 파일로), `GET /api/analysis`, `GET /api/analysis/{id}`, `/events`, `/findings`. 대시보드는 서버가 `frontend/index.html`을 `/`에서 직접 서빙하므로 `uvicorn` 실행 후 `http://localhost:8000`을 그대로 열면 됩니다.
+
+## 로컬 파일 업로드 분석
+
+실제 악성 샘플은 애초에 PyPI에 없어서 이름으로 못 받아옵니다 — `POST /api/analysis/upload`(multipart, `file` 필드 + 선택적 `network`/`timeout` 폼 필드)에 `.whl`/`.tar.gz`/`.tgz`/`.zip` 아티팩트를 그대로 올리면 `pip download` 단계만 건너뛰고 나머지(inspect→build→install→import→probe→execute, 시그널 추출, sinkhole)는 PyPI 경로와 완전히 동일한 파이프라인을 탑니다(`package.analyze_package`의 `local_artifact` 파라미터). 이름/버전은 아티팩트 자체의 METADATA/PKG-INFO에서 읽고, 그것도 없으면 파일명에서 유추합니다(`package.guess_package_name`). 업로드 파일은 `SAMPLES_DIR`(기본 `samples/`, git에 안 올라감 — `.gitignore` 참고)에 분석 ID를 붙여 저장되고 분석 후에도 자동 삭제되지 않습니다(npm 사촌 프로젝트의 `samples/`와 동일한 취지 — 실제 악성코드가 로컬 디스크에 실물로 남으니, 이 프로젝트 전체와 마찬가지로 격리된 환경에서만 다루고 압축해서 옮기거나 클라우드 동기화 폴더에 두지 마세요). 대시보드에서는 "새 분석 시작" 아래 별도 파일 업로드 폼으로 접근할 수 있습니다.
 
 ## 구조
 

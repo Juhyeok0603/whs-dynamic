@@ -3,7 +3,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from packaging.version import InvalidVersion, Version
@@ -15,6 +15,9 @@ from .storage import load_report
 app = FastAPI(title="PyPI DAST MVP", version="0.1.0")
 executor = ThreadPoolExecutor(max_workers=2)
 jobs: dict[str, dict] = {}  # analysis_id -> in-flight job state, until report.json exists on disk
+_UPLOAD_SUFFIXES = (".whl", ".tar.gz", ".tgz", ".zip")
+_MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # generous for a single package artifact
+_VALID_NETWORKS = {"disabled", "restricted", "full", "sinkhole"}
 LOG_FILES = (
     "package.log", "fs-diff.log", "exit-code.txt", "dns.log", "netsim.json", "network.pcap", "gvisor-trace.json", "resource.json",
     # signal-extraction pipeline: raw inputs (produced by package.analyze_package, passed through storage.write_log_bundle)
@@ -65,6 +68,43 @@ def _run_analysis(analysis_id: str, request: AnalysisRequest):
         job["stage"] = name
         job["completed_stages"] = min(job["completed_stages"] + 1, job["total_stages"])
     report = analyze_package(request.package, request.version, request.artifact, request.network, request.timeout, request.custom_command, analysis_id, on_stage)
+    jobs[analysis_id].update(status=report.analysis["status"], finished_at=now())
+
+
+@app.post("/api/analysis/upload", status_code=202)
+async def create_analysis_from_upload(file: UploadFile = File(...), network: str = Form("sinkhole"), timeout: int = Form(240)):
+    """Analyzes a locally-uploaded artifact (e.g. a real malicious sample never published to PyPI)
+    instead of resolving one by name — same pipeline from 'inspect' onward as create_analysis, see
+    package.analyze_package's local_artifact parameter."""
+    if network not in _VALID_NETWORKS:
+        raise HTTPException(400, f"network must be one of {sorted(_VALID_NETWORKS)}")
+    name = Path(file.filename or "").name  # strip any directory component — never trust the client's path
+    if not name.endswith(_UPLOAD_SUFFIXES):
+        raise HTTPException(400, f"unsupported file type — expected one of {_UPLOAD_SUFFIXES}")
+    analysis_id = str(uuid.uuid4())
+    settings.samples_dir.mkdir(parents=True, exist_ok=True)
+    dest = settings.samples_dir / f"{analysis_id}_{name}"
+    size = 0
+    with dest.open("wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > _MAX_UPLOAD_BYTES:
+                dest.unlink(missing_ok=True)
+                raise HTTPException(413, "file too large")
+            f.write(chunk)
+    total_stages = 5  # resolve(no-op), download(no-op), inspect, install, import
+    jobs[analysis_id] = {"status": "queued", "package": name, "version": None, "stage": None, "completed_stages": 0, "total_stages": total_stages, "started_at": None, "finished_at": None}
+    executor.submit(_run_uploaded_analysis, analysis_id, dest, network, timeout)
+    return {"analysis_id": analysis_id, "status": "queued"}
+
+
+def _run_uploaded_analysis(analysis_id: str, artifact_path: Path, network: str, timeout: int):
+    jobs[analysis_id].update(status="running", started_at=now())
+    def on_stage(name: str, status: str):
+        job = jobs[analysis_id]
+        job["stage"] = name
+        job["completed_stages"] = min(job["completed_stages"] + 1, job["total_stages"])
+    report = analyze_package(network=network, timeout=timeout, analysis_id=analysis_id, on_stage=on_stage, local_artifact=artifact_path)
     jobs[analysis_id].update(status=report.analysis["status"], finished_at=now())
 
 
