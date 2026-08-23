@@ -42,6 +42,12 @@ API: `POST /api/analysis`(PyPI 이름으로), `POST /api/analysis/upload`(로컬
 
 실제 악성 샘플은 애초에 PyPI에 없어서 이름으로 못 받아옵니다 — `POST /api/analysis/upload`(multipart, `file` 필드 + 선택적 `network`/`timeout` 폼 필드)에 `.whl`/`.tar.gz`/`.tgz`/`.zip` 아티팩트를 그대로 올리면 `pip download` 단계만 건너뛰고 나머지(inspect→build→install→import→probe→execute, 시그널 추출, sinkhole)는 PyPI 경로와 완전히 동일한 파이프라인을 탑니다(`package.analyze_package`의 `local_artifact` 파라미터). 이름/버전은 아티팩트 자체의 METADATA/PKG-INFO에서 읽고, 그것도 없으면 파일명에서 유추합니다(`package.guess_package_name`). 업로드 파일은 `SAMPLES_DIR`(기본 `samples/`, git에 안 올라감 — `.gitignore` 참고)에 분석 ID를 붙여 저장되고 분석 후에도 자동 삭제되지 않습니다(npm 사촌 프로젝트의 `samples/`와 동일한 취지 — 실제 악성코드가 로컬 디스크에 실물로 남으니, 이 프로젝트 전체와 마찬가지로 격리된 환경에서만 다루고 압축해서 옮기거나 클라우드 동기화 폴더에 두지 마세요). 대시보드에서는 "새 분석 시작" 아래 별도 파일 업로드 폼으로 접근할 수 있습니다.
 
+PyPI 이름 경로의 "download" 스테이지는 `--no-deps` 없이 돌아서 선언된 런타임 의존성까지 같이 받아오는데,
+업로드는 그 호출 자체가 없어 의존성이 workspace에 안 남는 문제가 있었다 — `package.prefetch_declared_dependencies`가
+아티팩트의 `Requires-Dist` 원본 문자열(버전 제약 그대로, 정규화된 이름만 쓰면 최신 버전을 받아서 제약이
+안 맞을 수 있음)로 호스트에서 최대 20개까지 미리 받아둬서 `install --no-index --find-links /workspace`가
+오프라인으로도 웬만하면 만족되게 한다.
+
 ## 멀티 Python 버전 샌드박스
 
 실제 악성 샘플 중엔 (오래된 cookiecutter 템플릿에서 그대로 찍어낸 듯) `Requires-Python: >=3.8.0,<3.9`처럼

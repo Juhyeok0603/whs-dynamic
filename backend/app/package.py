@@ -22,6 +22,7 @@ from .sinkhole import Sinkhole
 from .signals import build_all as build_signals
 
 _DOMAIN_INTEL_LIMIT = 10  # WHOIS + reputation lookups are slow network round-trips; cap per analysis
+_MAX_DEPENDENCY_DOWNLOADS = 20  # a pathologically dependency-heavy upload shouldn't stall the whole analysis
 # Common PEP 517 [build-system].requires backends. These are trusted infra (not the analyzed package
 # itself), so caching them once and feeding them to the sandboxed "build" stage via --find-links keeps
 # that stage offline like every other stage, instead of needing real internet just to fetch a standard
@@ -85,6 +86,22 @@ def read_package_metadata(artifact_path: Path) -> dict:
     requires = msg.get_all("Requires-Dist") or []
     declared = sorted({re.split(r"[\s\[;<>=!()]", r.strip())[0].lower() for r in requires if r.strip()})
     return {"name": msg.get("Name"), "version": msg.get("Version"), "declared_dependencies": declared, "requires_dist_raw": requires, "raw_available": True, "requires_python": msg.get("Requires-Python")}
+
+
+def prefetch_declared_dependencies(requirements: list[str], dest: Path, limit: int = _MAX_DEPENDENCY_DOWNLOADS) -> None:
+    """Best-effort host-side download of an artifact's declared runtime dependencies, for the upload path
+    (see analyze_package's local_artifact) — the PyPI-name path's own "download" stage already gets these
+    for free since it doesn't pass --no-deps. Uses the raw Requires-Dist strings (not bare normalized
+    names) so version constraints are actually respected, same as pip itself would apply them; a marker
+    that doesn't match the current environment (e.g. an extra) is simply skipped by pip, same as always.
+    Capped and never raises — a pathologically dependency-heavy or slow-to-resolve upload shouldn't stall
+    the whole analysis, it just leaves install() to fail honestly on whatever it couldn't find."""
+    for requirement in requirements[:limit]:
+        _safe_call(
+            subprocess.run,
+            [sys.executable, "-m", "pip", "download", "--no-deps", "--disable-pip-version-check", "--retries", "1", "--timeout", "15", "--dest", str(dest), requirement],
+            capture_output=True, text=True, timeout=30,
+        )
 
 
 def select_artifact(files: list[Path], package: str, artifact: str) -> Path | None:
@@ -181,6 +198,13 @@ def analyze_package(package: str | None = None, version: str | None = None, arti
             # support an old Python — a single fixed sandbox image can't run those at all, so pick a
             # supported image version that actually satisfies the package's own Requires-Python.
             python_image = select_python_image(metadata.get("requires_python"))
+            if local_artifact:
+                # The PyPI-name path's own "download" stage (no --no-deps) fetches the full dependency
+                # tree alongside the artifact for free; an upload skips that call entirely (there's no
+                # name to resolve by), so its declared runtime dependencies never land in workspace on
+                # their own — "install --no-index --find-links /workspace" would otherwise fail on the
+                # first real dependency.
+                prefetch_declared_dependencies(metadata.get("requires_dist_raw", []), workspace)
             registry_meta = _safe_call(registry.fetch_registry_meta, package, version)
             download_stats = _safe_call(registry.fetch_download_stats, package)
             typosquat = _safe_call(registry.typosquat_check, package, settings.data_dir / "_cache", settings.top_packages_cache_ttl_hours)

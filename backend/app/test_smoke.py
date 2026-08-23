@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from .collectors import EbpfCollector, FilesystemCollector, GvisorStraceCollector, PcapCollector
 from .analyzer import analyze
-from .package import ensure_build_backends_cached, guess_package_name, own_console_scripts, read_package_metadata, select_artifact
+from .package import ensure_build_backends_cached, guess_package_name, own_console_scripts, prefetch_declared_dependencies, read_package_metadata, select_artifact
 from .schemas import NormalizedEvent
 from . import pcap_tls, registry, sandbox, signals, sinkhole, static_scan
 
@@ -82,6 +82,18 @@ def test_read_package_metadata_finds_pkg_info_in_zip_sdist(tmp_path: Path):
     assert metadata["raw_available"] is True
     assert metadata["name"] == "weird-sdist"
     assert metadata["version"] == "1.0"
+
+
+def test_prefetch_declared_dependencies_uses_raw_requirement_and_respects_limit(tmp_path: Path, monkeypatch):
+    """Regression: must download the raw 'Faker<16.0.0,>=15.3.1' requirement string (version constraint
+    intact), not a bare normalized 'faker' name that would silently fetch a possibly-incompatible latest
+    version pip would then refuse at install time. Also must never exceed the configured cap."""
+    calls = []
+    monkeypatch.setattr("backend.app.package.subprocess.run", lambda cmd, **k: calls.append(cmd))
+    prefetch_declared_dependencies(["Faker<16.0.0,>=15.3.1", "requests>=2.0", "third-one"], tmp_path, limit=2)
+    assert len(calls) == 2  # capped, third-one never attempted
+    assert calls[0][-1] == "Faker<16.0.0,>=15.3.1"  # raw requirement, not a bare "faker"
+    assert "--no-deps" in calls[0]
 
 
 def test_ensure_build_backends_cached_skips_download_when_already_populated(tmp_path: Path, monkeypatch):
