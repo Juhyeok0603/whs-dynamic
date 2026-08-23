@@ -9,7 +9,7 @@ from .collectors import EbpfCollector, FilesystemCollector, GvisorStraceCollecto
 from .analyzer import analyze
 from .package import ensure_build_backends_cached, guess_package_name, own_console_scripts, read_package_metadata, select_artifact
 from .schemas import NormalizedEvent
-from . import pcap_tls, registry, signals, sinkhole, static_scan
+from . import pcap_tls, registry, sandbox, signals, sinkhole, static_scan
 
 
 def test_strace_privilege_escape_dns(tmp_path: Path):
@@ -49,6 +49,16 @@ def test_pcap_and_ebpf_line_parsers():
     assert EbpfCollector.parse_line("EXEC pid=123 comm=curl file=/usr/bin/curl") == {"type": "process.exec", "pid": 123, "comm": "curl", "file": "/usr/bin/curl"}
     assert EbpfCollector.parse_line("CONN pid=9 comm=python3") == {"type": "network.connect", "pid": 9, "comm": "python3"}
     assert EbpfCollector.parse_line("EXEC pid=1 comm=dockerd file=/usr/bin/dockerd") is None  # infra noise filtered
+
+
+def test_select_python_image_picks_a_supported_version_satisfying_requires_python():
+    """Regression: a real malicious sample (Requires-Python: >=3.8.0,<3.9) could never build/install under
+    the sandbox's single fixed python:3.12-slim image — this needs to actually pick 3.8 for it."""
+    assert sandbox.select_python_image(None) == "python:3.12-slim"
+    assert sandbox.select_python_image(">=3.8.0,<3.9") == "python:3.8-slim"
+    assert sandbox.select_python_image(">=3.10") == "python:3.13-slim"  # newest supported satisfying it
+    assert sandbox.select_python_image("not a real specifier!!") == "python:3.12-slim"
+    assert sandbox.select_python_image("<3.6") == "python:3.12-slim"  # no supported version satisfies it
 
 
 def test_guess_package_name_from_uploaded_filename():

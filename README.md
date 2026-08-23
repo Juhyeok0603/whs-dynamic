@@ -42,10 +42,23 @@ API: `POST /api/analysis`(PyPI 이름으로), `POST /api/analysis/upload`(로컬
 
 실제 악성 샘플은 애초에 PyPI에 없어서 이름으로 못 받아옵니다 — `POST /api/analysis/upload`(multipart, `file` 필드 + 선택적 `network`/`timeout` 폼 필드)에 `.whl`/`.tar.gz`/`.tgz`/`.zip` 아티팩트를 그대로 올리면 `pip download` 단계만 건너뛰고 나머지(inspect→build→install→import→probe→execute, 시그널 추출, sinkhole)는 PyPI 경로와 완전히 동일한 파이프라인을 탑니다(`package.analyze_package`의 `local_artifact` 파라미터). 이름/버전은 아티팩트 자체의 METADATA/PKG-INFO에서 읽고, 그것도 없으면 파일명에서 유추합니다(`package.guess_package_name`). 업로드 파일은 `SAMPLES_DIR`(기본 `samples/`, git에 안 올라감 — `.gitignore` 참고)에 분석 ID를 붙여 저장되고 분석 후에도 자동 삭제되지 않습니다(npm 사촌 프로젝트의 `samples/`와 동일한 취지 — 실제 악성코드가 로컬 디스크에 실물로 남으니, 이 프로젝트 전체와 마찬가지로 격리된 환경에서만 다루고 압축해서 옮기거나 클라우드 동기화 폴더에 두지 마세요). 대시보드에서는 "새 분석 시작" 아래 별도 파일 업로드 폼으로 접근할 수 있습니다.
 
+## 멀티 Python 버전 샌드박스
+
+실제 악성 샘플 중엔 (오래된 cookiecutter 템플릿에서 그대로 찍어낸 듯) `Requires-Python: >=3.8.0,<3.9`처럼
+좁은 범위만 지원하는 경우가 있습니다 — 샌드박스가 `python:3.12-slim` 하나만 썼다면 이런 패키지는
+build/install이 "requires a different Python"으로 항상 실패합니다. `read_package_metadata`가 아티팩트의
+`Requires-Python`을 읽고, `sandbox.select_python_image()`가 `packaging.specifiers.SpecifierSet`으로 그
+제약을 만족하는 **가장 최신** 지원 버전(`3.8`~`3.13`, 전부 gVisor+계측 검증된 공식 `python:X.Y-slim` 태그)을
+골라 그 이미지로 build/install/import/probe/execute를 돌립니다. 제약이 없거나 파싱 실패, 또는 지원 범위
+밖(예: 3.6 이하 요구)이면 검증 안 된 이미지를 추측하지 않고 기존 기본값(`python:3.12-slim`)으로 그대로
+degrade — 실제 사용된 이미지는 `report.sandbox.python_image`에서 확인 가능합니다. 처음 쓰는 버전은
+`docker pull`이 필요해 호스트 자체 인터넷이 있어야 합니다(샌드박스 네트워크 모드와 무관 — 기존 `pip
+download`/registry 조회와 같은 호스트 사이드 동작).
+
 ## 구조
 
 - `backend/app/package.py`: resolve/download/inspect/build/install/import/probe:*/execute stage orchestration
-- `backend/app/sandbox.py`: Docker `--runtime runsc`, network, resource limit command builder
+- `backend/app/sandbox.py`: Docker `--runtime runsc`, network, resource limit command builder, `select_python_image`
 - `backend/app/collectors.py`: filesystem diff와 normalized runtime event 기반
 - `backend/app/analyzer.py`: rule-based finding, scoring, basic correlation
 - `data/analyses/<UUID>/report.json`: 통합 JSON 결과 저장 위치

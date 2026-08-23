@@ -16,7 +16,7 @@ from .schemas import AnalysisReport, NormalizedEvent, StageResult, now
 from .collectors import EbpfCollector, FilesystemCollector, GvisorStraceCollector, HostSamplerCollector, PcapCollector, RuntimeCollector
 from .analyzer import analyze
 from .storage import save_report, write_log_bundle
-from .sandbox import check_runtime, docker_command
+from .sandbox import check_runtime, docker_command, select_python_image
 from . import instrumentation, pcap_tls, registry, static_scan
 from .sinkhole import Sinkhole
 from .signals import build_all as build_signals
@@ -80,11 +80,11 @@ def read_package_metadata(artifact_path: Path) -> dict:
         # should be flagging, not something metadata-reading should crash the whole analysis over.
         pass
     if raw is None:
-        return {"declared_dependencies": [], "requires_dist_raw": [], "raw_available": False}
+        return {"declared_dependencies": [], "requires_dist_raw": [], "raw_available": False, "requires_python": None}
     msg = email.message_from_string(raw)
     requires = msg.get_all("Requires-Dist") or []
     declared = sorted({re.split(r"[\s\[;<>=!()]", r.strip())[0].lower() for r in requires if r.strip()})
-    return {"name": msg.get("Name"), "version": msg.get("Version"), "declared_dependencies": declared, "requires_dist_raw": requires, "raw_available": True}
+    return {"name": msg.get("Name"), "version": msg.get("Version"), "declared_dependencies": declared, "requires_dist_raw": requires, "raw_available": True, "requires_python": msg.get("Requires-Python")}
 
 
 def select_artifact(files: list[Path], package: str, artifact: str) -> Path | None:
@@ -121,14 +121,14 @@ def own_console_scripts(site_dir: Path, package: str) -> list[str]:
     return list(parser["console_scripts"]) if parser.has_section("console_scripts") else []
 
 
-def run_stage(name, command, cwd, timeout, sandboxed=False, network="restricted", env=None, dns=None, docker_network=None):
+def run_stage(name, command, cwd, timeout, sandboxed=False, network="restricted", env=None, dns=None, docker_network=None, python_image=None):
     started = time.monotonic(); started_at = now()
     try:
         if sandboxed:
             ready, reason, runtime = check_runtime()
             if not ready:
                 raise RuntimeError(f"sandbox unavailable: {reason}")
-            command = docker_command(cwd, command, network, runtime, env=env, dns=dns, docker_network=docker_network)
+            command = docker_command(cwd, command, network, runtime, env=env, dns=dns, docker_network=docker_network, **({"python_image": python_image} if python_image else {}))
         result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=timeout)
         status = "completed" if result.returncode == 0 else "failed"
         timed_out = False
@@ -177,6 +177,10 @@ def analyze_package(package: str | None = None, version: str | None = None, arti
             metadata = read_package_metadata(selected)
             package = package or metadata.get("name") or guess_package_name(selected.name)
             version = version or metadata.get("version")
+            # Some real packages (seen on actual malicious samples built from a stale template) only
+            # support an old Python — a single fixed sandbox image can't run those at all, so pick a
+            # supported image version that actually satisfies the package's own Requires-Python.
+            python_image = select_python_image(metadata.get("requires_python"))
             registry_meta = _safe_call(registry.fetch_registry_meta, package, version)
             download_stats = _safe_call(registry.fetch_download_stats, package)
             typosquat = _safe_call(registry.typosquat_check, package, settings.data_dir / "_cache", settings.top_packages_cache_ttl_hours)
@@ -224,14 +228,14 @@ def analyze_package(package: str | None = None, version: str | None = None, arti
                         except OSError:
                             pass
                     gvisor.mark()
-                    build = run_stage("build", ["python", "-m", "pip", "wheel", "--no-deps", "--no-cache-dir", "--no-index", "--find-links", "/workspace", f"/workspace/{selected.name}", "-w", "/workspace/built"], workspace, 90, True, effective_network, stage_env("build"), dns_ip, docker_net); track(build)
+                    build = run_stage("build", ["python", "-m", "pip", "wheel", "--no-deps", "--no-cache-dir", "--no-index", "--find-links", "/workspace", f"/workspace/{selected.name}", "-w", "/workspace/built"], workspace, 90, True, effective_network, stage_env("build"), dns_ip, docker_net, python_image); track(build)
                     events.extend(gvisor.collect("build"))
                 gvisor.mark()
-                install = run_stage("install", ["python", "-m", "pip", "install", "--no-index", "--find-links", "/workspace", "--target", "/workspace/site", f"/workspace/{selected.name}"], workspace, 60, True, effective_network, stage_env("install"), dns_ip, docker_net); track(install)
+                install = run_stage("install", ["python", "-m", "pip", "install", "--no-index", "--find-links", "/workspace", "--target", "/workspace/site", f"/workspace/{selected.name}"], workspace, 60, True, effective_network, stage_env("install"), dns_ip, docker_net, python_image); track(install)
                 events.extend(gvisor.collect("install"))
                 top = package.lower().replace("-", "_")
                 gvisor.mark()
-                import_stage = run_stage("import", ["python", "-c", f"import sys; sys.path.insert(0, '/workspace/site'); import {top}"], workspace, 30, True, effective_network, stage_env("import"), dns_ip, docker_net); track(import_stage)
+                import_stage = run_stage("import", ["python", "-c", f"import sys; sys.path.insert(0, '/workspace/site'); import {top}"], workspace, 30, True, effective_network, stage_env("import"), dns_ip, docker_net, python_image); track(import_stage)
                 events.extend(gvisor.collect("import"))
                 if import_stage.status == "completed":
                     events.append(runtime.event("import", "process.exec", {"executable": "python", "args": ["-c", f"import {top}"], "parent": None}, "process"))
@@ -243,11 +247,11 @@ def analyze_package(package: str | None = None, version: str | None = None, arti
                 for script in own_console_scripts(workspace / "site", package)[:3]:
                     if not (workspace / "site" / "bin" / script).exists(): continue
                     gvisor.mark()
-                    probe = run_stage(f"probe:{script}", ["python", "-c", probe_runner, f"/workspace/site/bin/{script}"], workspace, 15, True, effective_network, stage_env(f"probe:{script}"), dns_ip, docker_net); track(probe)
+                    probe = run_stage(f"probe:{script}", ["python", "-c", probe_runner, f"/workspace/site/bin/{script}"], workspace, 15, True, effective_network, stage_env(f"probe:{script}"), dns_ip, docker_net, python_image); track(probe)
                     events.extend(gvisor.collect(f"probe:{script}"))
                 if custom_command:
                     gvisor.mark()
-                    execute = run_stage("execute", custom_command, workspace, 30, True, effective_network, stage_env("execute"), dns_ip, docker_net); track(execute)
+                    execute = run_stage("execute", custom_command, workspace, 30, True, effective_network, stage_env("execute"), dns_ip, docker_net, python_image); track(execute)
                     events.extend(gvisor.collect("execute"))
             finally:
                 for collector in (host_sampler, pcap, ebpf, sinkhole):
@@ -302,7 +306,7 @@ def analyze_package(package: str | None = None, version: str | None = None, arti
                 "ebpf": ebpf.status,
                 "sinkhole": sinkhole.status if sinkhole else "not used (network != sinkhole)",
             }
-            report = AnalysisReport(analysis_id=analysis_id, package={"ecosystem":"pypi", "name":package, "version":version, "distribution":{"type":distribution_type,"filename":selected.name}}, analysis={"started_at":started,"finished_at":finished,"duration_seconds":0,"status":"completed"}, sandbox={"runtime":sandbox_runtime,"network_mode":effective_network}, summary={"risk_score":score,"severity":("CRITICAL" if score>=80 else "HIGH" if score>=60 else "MEDIUM" if score>=40 else "LOW" if score>=20 else "INFO"),"process_events":len(behavior["processes"]),"file_events":len(behavior["files"]),"network_events":len(behavior["connections"]),"dns_queries":len(dns_events),"findings":len(findings)}, stages=stages, findings=findings, behavior=behavior, filesystem_diff=diff, resource_usage=host_sampler.usage(), behavior_chains=chains, collector_status=collector_status, errors=errors, signals=report_signals)
+            report = AnalysisReport(analysis_id=analysis_id, package={"ecosystem":"pypi", "name":package, "version":version, "distribution":{"type":distribution_type,"filename":selected.name}}, analysis={"started_at":started,"finished_at":finished,"duration_seconds":0,"status":"completed"}, sandbox={"runtime":sandbox_runtime,"network_mode":effective_network,"python_image":python_image}, summary={"risk_score":score,"severity":("CRITICAL" if score>=80 else "HIGH" if score>=60 else "MEDIUM" if score>=40 else "LOW" if score>=20 else "INFO"),"process_events":len(behavior["processes"]),"file_events":len(behavior["files"]),"network_events":len(behavior["connections"]),"dns_queries":len(dns_events),"findings":len(findings)}, stages=stages, findings=findings, behavior=behavior, filesystem_diff=diff, resource_usage=host_sampler.usage(), behavior_chains=chains, collector_status=collector_status, errors=errors, signals=report_signals)
         except Exception as exc:
             errors.append(str(exc)); report = AnalysisReport(analysis_id=analysis_id, package={"ecosystem":"pypi","name":package,"version":version}, analysis={"started_at":started,"finished_at":now(),"duration_seconds":0,"status":"failed"}, sandbox={"runtime":settings.sandbox_runtime,"network_mode":network}, summary={"risk_score":0,"severity":"INFO","findings":0}, stages=stages, findings=[], behavior={}, filesystem_diff={"created":[],"modified":[],"deleted":[]}, resource_usage={}, behavior_chains=[], collector_status={"filesystem":"success"}, errors=errors)
         # Written while the workspace (and its raw network.pcap) still exist, in both the success and failure case.
