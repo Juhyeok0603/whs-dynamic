@@ -282,7 +282,7 @@ async function openDetail(id){
   document.querySelector('#overlay').innerHTML=`<div class="detail" onclick="closeDetail(event)"><div class="panel" onclick="event.stopPropagation()">
     <button class="close" onclick="closeDetail(event)">닫기</button>
     <h2>${esc(rep.package.name)}${rep.package.version?'=='+esc(rep.package.version):''}</h2>
-    <div class="sub">${esc(id)} — 위험도 ${rep.summary.risk_score} / ${esc(rep.summary.severity)} — 샌드박스: ${esc(rep.sandbox?.runtime)} (네트워크: ${esc(rep.sandbox?.network_mode)})</div>
+    <div class="sub">${esc(id)} — 위험도 ${rep.summary.risk_score} / ${esc(rep.summary.severity)} — 샌드박스: ${esc(rep.sandbox?.runtime)} (네트워크: ${esc(rep.sandbox?.network_mode)}, 이미지: ${esc(rep.sandbox?.python_image||'-')})</div>
     <div class="sub">시작: ${fmtTime(rep.analysis.started_at)} · 종료: ${fmtTime(rep.analysis.finished_at)} · 소요: ${rep.analysis.duration_seconds}초</div>
 
     <div class="sec"><h3>실행 단계 <span class="n">(${(rep.stages||[]).length})</span></h3><div class="stagebar">${stages}</div></div>
